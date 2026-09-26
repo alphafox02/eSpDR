@@ -34,6 +34,15 @@ void on_signal(int)
 
 uint64_t join64(uint32_t low, uint32_t high) { return uint64_t(high) << 32 | low; }
 
+std::string clock_fault_description(ControlPort &fpga)
+{
+    uint32_t detail = fpga.command(CTL_STATUS, FPGA_STAT_CLOCK_FAULT_DETAIL);
+    std::string text = "forwarded-clock fault:";
+    if (detail & 0x80000000u) text += " acquisition PLL unlocked;";
+    if (detail & 0x40000000u) text += " input frequency out of range;";
+    return text + " last measurement " + std::to_string(detail & 0x3fffffffu) + " Hz";
+}
+
 }  // namespace
 
 std::string describe_flags(uint32_t flags)
@@ -43,13 +52,14 @@ std::string describe_flags(uint32_t flags)
         text += (flags & bit) ? " " : " !";
         text += name;
     };
-    add(FPGA_FLAG_REFERENCE_ON, "reference");
+    add(FPGA_FLAG_REFERENCE_ON, "esp-clock");
     add(FPGA_FLAG_PHASE_READY, "phase");
     add(FPGA_FLAG_DESKEW_READY, "deskew");
     add(FPGA_FLAG_DDR_READY, "ddr");
     add(FPGA_FLAG_ARMED, "armed");
     add(FPGA_FLAG_STREAM_ENDED, "ended");
     add(FPGA_FLAG_STREAM_OPEN, "open");
+    add(FPGA_FLAG_CLOCK_FAULT, "clock-fault");
     return text;
 }
 
@@ -183,7 +193,7 @@ Devices::Devices(const Options &options, bool require_radio)
         throw std::runtime_error(fpga.path() + " is not running this iqstream's FPGA image");
     if (uint32_t radio = esp.command(CTL_STATUS, ESP_STAT_RADIO); require_radio && radio != ESP_RADIO_OK)
         throw std::runtime_error("ESP radio initialisation failed (code " + std::to_string(radio) + ")");
-    uint32_t required = FPGA_FLAG_REFERENCE_ON | FPGA_FLAG_DESKEW_READY | FPGA_FLAG_DDR_READY;
+    uint32_t required = FPGA_FLAG_REFERENCE_ON | FPGA_FLAG_PHASE_READY | FPGA_FLAG_DESKEW_READY | FPGA_FLAG_DDR_READY;
     if (uint32_t flags = fpga.command(CTL_STATUS, FPGA_STAT_FLAGS); (flags & required) != required)
         throw std::runtime_error("FPGA not ready:" + describe_flags(flags));
 }
@@ -237,6 +247,8 @@ RunResult run_capture(Devices &devices, const RunRequest &request)
 
             for (;;) {
                 if (esp.receive(ESP_RUN, run, run_reply, request.progress ? 100ms : 200ms)) break;
+                if (fpga.command(CTL_STATUS, FPGA_STAT_FLAGS) & FPGA_FLAG_CLOCK_FAULT)
+                    throw std::runtime_error(clock_fault_description(fpga));
                 double elapsed = std::chrono::duration<double>(Clock::now() - started).count();
                 bool receiver_stopped = !receiver.error().empty() || receiver.done();
                 if (request.progress) request.progress({elapsed, receiver.bytes(), decoder->progress()});
@@ -251,8 +263,19 @@ RunResult run_capture(Devices &devices, const RunRequest &request)
                 if (show_progress && Clock::now() - last_report >= 1s) {
                     double interval = std::chrono::duration<double>(Clock::now() - last_report).count();
                     uint64_t bytes = receiver.bytes();
-                    std::fprintf(stderr, "\r%7.1f s  %7.2f MB/s  %9.3f Mpairs", elapsed,
-                                 (bytes - last_bytes) / interval / 1e6, decoder->progress() / 1e6);
+                    uint64_t errors = 0;
+                    for (unsigned index : {FPGA_STAT_FRAMING0, FPGA_STAT_FRAMING1,
+                                           FPGA_STAT_CHECKSUM0, FPGA_STAT_CHECKSUM1,
+                                           FPGA_STAT_END_MARK0, FPGA_STAT_END_MARK1,
+                                           FPGA_STAT_SAMPLE_OVERFLOW, FPGA_STAT_REORDER_OVERFLOW0,
+                                           FPGA_STAT_REORDER_OVERFLOW1, FPGA_STAT_LOST_UNITS,
+                                           FPGA_STAT_RING_INPUT_OVERFLOW, FPGA_STAT_RING_OUTPUT_OVERFLOW,
+                                           FPGA_STAT_RING_ERRORS, FPGA_STAT_USB_UNDERRUNS,
+                                           FPGA_STAT_CLOCK_ANOMALIES})
+                        errors += fpga.command(CTL_STATUS, index);
+                    std::fprintf(stderr, "\r%7.1f s  %7.2f MB/s  %9.3f Mpairs  errors=%llu", elapsed,
+                                 (bytes - last_bytes) / interval / 1e6, decoder->progress() / 1e6,
+                                 (unsigned long long)errors);
                     std::fflush(stderr);
                     last_report = Clock::now();
                     last_bytes = bytes;
@@ -276,6 +299,8 @@ RunResult run_capture(Devices &devices, const RunRequest &request)
             uint64_t seen = receiver.bytes();
             while (!receiver.done()) {
                 std::this_thread::sleep_for(20ms);
+                if (fpga.command(CTL_STATUS, FPGA_STAT_FLAGS) & FPGA_FLAG_CLOCK_FAULT)
+                    throw std::runtime_error(clock_fault_description(fpga));
                 if (receiver.bytes() != seen) {
                     seen = receiver.bytes();
                     last_progress = Clock::now();
@@ -317,6 +342,7 @@ RunResult run_capture(Devices &devices, const RunRequest &request)
 
     const auto &e = result.esp;
     const auto &f = result.fpga;
+    result.require(!(f[FPGA_STAT_FLAGS] & FPGA_FLAG_CLOCK_FAULT), "forwarded clock fault");
     uint64_t esp_pairs = join64(e[ESP_STAT_PAIRS0_LO], e[ESP_STAT_PAIRS0_HI]) +
                          join64(e[ESP_STAT_PAIRS1_LO], e[ESP_STAT_PAIRS1_HI]);
     uint64_t fpga_pairs = join64(f[FPGA_STAT_PAIRS_LO], f[FPGA_STAT_PAIRS_HI]);
@@ -355,6 +381,7 @@ RunResult run_capture(Devices &devices, const RunRequest &request)
         {FPGA_STAT_RING_OUTPUT_OVERFLOW, "DDR output overflows"},
         {FPGA_STAT_RING_ERRORS, "DDR ring errors"},
         {FPGA_STAT_USB_UNDERRUNS, "USB underruns"},
+        {FPGA_STAT_CLOCK_ANOMALIES, "forwarded-clock pulse anomalies"},
     };
     for (const auto &[index, name] : error_counters)
         result.require(f[index] == 0, std::to_string(f[index]) + " " + name);
@@ -512,7 +539,8 @@ int command_status(const Options &options)
         "sample overflow", "reorder overflow 0", "reorder overflow 1", "lost units",
         "ring input overflow", "ring output overflow", "ring errors", "ring used", "ring peak",
         "usb underruns", "usb max stall", "reorder peak 0", "reorder peak 1", "phase",
-        "lost pairs lo", "lost pairs hi", "discarded units"};
+        "lost pairs lo", "lost pairs hi", "discarded units", "forwarded clock Hz", "clock fault detail",
+        "clock pulse anomalies", "clock pulse widths"};
     std::printf("\nlast run, ESP:\n");
     for (unsigned i = 0; i < ESP_STAT_LO_HZ; ++i)
         std::printf("  %-22s %u\n", esp_names[i], esp.command(CTL_STATUS, i));

@@ -1,6 +1,7 @@
 # Clocks and FT600 interface timing.
 
 create_clock -name oscillator -period 10.000 [get_ports clk100]
+create_clock -name esp_reference -period 50.000 [get_ports esp_clock]
 
 # FT600 100 MHz clock, 245 mode. Times are relative to the FT clock edge at
 # the FPGA pin.

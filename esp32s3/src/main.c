@@ -11,6 +11,8 @@
 #include "capture.h"
 #include "control.h"
 #include "hal/dedic_gpio_cpu_ll.h"
+#include "hal/clk_gate_ll.h"
+#include "hal/i2s_ll.h"
 #include "platform.h"
 #include "radio.h"
 #include "soc/gpio_reg.h"
@@ -34,6 +36,46 @@ static const unsigned link_signal[LINK_LINES] = {
 
 static uint8_t mac[6];
 static bool outputs_enabled;
+
+/* The on-board WS2812 retains its last colour through a CPU/RAM reload.
+ * Send 24 zero bits on GPIO48; a static low alone does not clear it. */
+static void rgb_led_off(void)
+{
+    REG(IO_MUX_GPIO48_REG) = (PIN_FUNC_GPIO << MCU_SEL_S) | (1u << FUN_DRV_S);
+    REG(GPIO_FUNC0_OUT_SEL_CFG_REG + 4 * 48) = SIG_GPIO_OUT_IDX | GPIO_FUNC0_OEN_SEL;
+    REG(GPIO_OUT1_W1TC_REG) = 1u << 16;
+    REG(GPIO_ENABLE1_W1TS_REG) = 1u << 16;
+    delay_us(300);
+    for (unsigned bit = 0; bit < 24; ++bit) {
+        uint32_t start = cpu_cycles();
+        REG(GPIO_OUT1_W1TS_REG) = 1u << 16;
+        while (cpu_cycles() - start < 72) {}
+        REG(GPIO_OUT1_W1TC_REG) = 1u << 16;
+        while (cpu_cycles() - start < 300) {}
+    }
+    delay_us(300);
+}
+
+/* Continuous hardware MCLK, independent of both CPU-driven data lanes.
+ * The restored crystal feeds the ESP BBPLL; PLL240 / 12 gives 20 MHz on
+ * GPIO41 -> Br B12/F4. No DMA, I2S data transfer or per-edge CPU writes. */
+static void init_forwarded_clock(void)
+{
+    REG(GPIO_ENABLE_W1TC_REG) = 1u << 8; /* release former clock pad */
+    REG(GPIO_ENABLE1_W1TC_REG) = 1u << 9;
+    periph_ll_enable_clk_clear_rst(PERIPH_I2S0_MODULE);
+    I2S0.tx_clkm_conf.clk_en = 1;
+    i2s_ll_tx_disable_clock(&I2S0);
+    i2s_ll_tx_clk_set_src(&I2S0, I2S_CLK_SRC_PLL_240M);
+    const hal_utils_clk_div_t divider = {.integer = 12, .denominator = 0, .numerator = 0};
+    i2s_ll_tx_set_mclk(&I2S0, &divider);
+    i2s_ll_mclk_bind_to_tx_clk(&I2S0);
+    i2s_ll_tx_enable_clock(&I2S0);
+    REG(PERIPHS_IO_MUX_GPIO0_U + 4 * 41) = (PIN_FUNC_GPIO << MCU_SEL_S) | FUN_IE | (1u << FUN_DRV_S);
+    REG(GPIO_FUNC0_OUT_SEL_CFG_REG + 4 * 41) = I2S0_MCLK_OUT_IDX | GPIO_FUNC0_OEN_SEL;
+    REG(GPIO_ENABLE1_W1TS_REG) = 1u << 9;
+    memory_barrier();
+}
 
 /* ---- link pins ------------------------------------------------------------------ */
 
@@ -165,10 +207,12 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
 void app_main(void)
 {
     platform_init();
+    rgb_led_off();
     init_link();
     start_core1();
     read_mac(mac);
     radio_init();
+    init_forwarded_clock();
 
     uint8_t request[CTL_REQUEST_BYTES];
     unsigned received = 0;

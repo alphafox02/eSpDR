@@ -18,7 +18,7 @@ module tb;
     wire [10:0] total_groups;
     wire [19:0] unpacked;
     link_lane #(.LANE(0)) lane (
-        .clk(clk), .reset(reset), .run(1'b1), .pair_valid(pair_valid), .samples(samples),
+        .clk(clk), .reset(reset), .run(1'b1), .data_late(8'b0), .pair_valid(pair_valid), .samples(samples),
         .byte_valid(byte_valid), .byte_value(byte_value), .byte_index(byte_index),
         .sequence_word(sequence_word), .unit_valid(unit_valid), .unit_first(unit_first),
         .unit_count(unit_count), .head_pairs(head_pairs), .tail_pairs(tail_pairs),

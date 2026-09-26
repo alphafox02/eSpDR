@@ -17,6 +17,7 @@ module link_input #(
     input  wire        clk,             // 120 MHz
     input  wire        reset,           // clk domain
     input  wire        clear,           // clk domain: clears the capture path
+    input wire [79:0] tap_settings,
     input  wire        run,             // clk domain
     output wire        deskew_ready,    // clk domain
     output wire        pair_valid,
@@ -33,9 +34,11 @@ module link_input #(
     always @(posedge clk)
         if (reset || !calibrated) settle <= 0;
         else if (settle != 7) settle <= settle + 1'b1;
-    wire load_taps = !reset && calibrated && settle == 1;
+    (* ASYNC_REG = "TRUE" *) reg [79:0] tap_meta = TAPS, tap_sync = TAPS;
+    always @(posedge clk) begin tap_meta <= tap_settings; tap_sync <= tap_meta; end
+    wire load_taps = !reset && calibrated && (settle == 1 || tap_readback != tap_sync);
     wire [79:0] tap_readback;
-    assign deskew_ready = !reset && calibrated && settle == 7 && tap_readback == TAPS;
+    assign deskew_ready = !reset && calibrated && settle == 7 && tap_readback == tap_sync && tap_sync == tap_meta;
 
     wire [15:0] delayed, rise, fall;
     genvar i;
@@ -48,7 +51,7 @@ module link_input #(
                 .REFCLK_FREQUENCY(200.0), .SIGNAL_PATTERN("DATA")
             ) delay (
                 .IDATAIN(raw), .DATAIN(1'b0), .DATAOUT(delayed[i]), .C(clk), .CE(1'b0),
-                .INC(1'b0), .LD(load_taps), .CNTVALUEIN(TAPS[i * 5 +: 5]),
+                .INC(1'b0), .LD(load_taps), .CNTVALUEIN(tap_sync[i * 5 +: 5]),
                 .CNTVALUEOUT(tap_readback[i * 5 +: 5]), .LDPIPEEN(1'b0), .REGRST(1'b0),
                 .CINVCTRL(1'b0));
             // rise at the rising edge, fall half a period later, presented

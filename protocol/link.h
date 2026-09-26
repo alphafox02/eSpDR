@@ -5,7 +5,7 @@
  * lane 0 (GPIO 4,5,6,7,15,16,17,18) and core 1 drives lane 1
  * (GPIO 3,46,9,10,11,12,13,14), each through its dedicated-GPIO port. The
  * FPGA samples every line at 240 MHz, synchronous with the ESP's 240 MHz CPU
- * clock (both derive from the FPGA's 40 MHz reference).
+ * clock (the FPGA follows the ESP's GPIO41 20 MHz reference).
  *
  * The ADC writes 80 Msps IQ pairs into four 16384-pair SRAM banks. Core 0
  * owns banks 0 and 2, core 1 owns banks 1 and 3. A "unit" is the contiguous

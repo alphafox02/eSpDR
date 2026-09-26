@@ -36,8 +36,8 @@
 #define CTL_FAILED 6      /* attempted and failed; see the operation */
 
 /* Identity values returned by CTL_INFO with argument 0. */
-#define CTL_ESP_FIRMWARE_ID 0x49515302
-#define CTL_FPGA_FIRMWARE_ID 0x49514603
+#define CTL_ESP_FIRMWARE_ID 0x49515305
+#define CTL_FPGA_FIRMWARE_ID 0x49514605
 
 /* Operations understood by both nodes. */
 #define CTL_INFO 1   /* arg 0: firmware id; ESP arg 1/2: MAC bytes 0-3 / 4-5 */
@@ -141,11 +141,17 @@
 #define ESP_FAIL_RADIO 9          /* radio initialisation failed at boot */
 
 /* FPGA operations. */
-#define FPGA_REFERENCE 16 /* arg FPGA_REFERENCE_KEY: start 40 MHz ESP clock; 0: stop */
+#define FPGA_REFERENCE 16 /* retired: v4 receives the ESP clock; never drives XTAL */
 #define FPGA_ARM 17       /* open a new stream: reset the pipeline and start receiving */
 #define FPGA_STOP 18      /* stop receiving; the stream ends with an END record */
 #define FPGA_PHASE 19     /* arg: link sampling phase, 0..FPGA_PHASE_STEPS-1 (not while armed) */
 #define FPGA_RELEASE 20   /* close the stream, stopping it first if it is still receiving */
+#define FPGA_CLOCK_DEBUG 21 /* arg0: live history;1..4: lock-fault history;5..16: 200 MHz pulse report */
+#define FPGA_SET_DELAY 22   /* arg: line << 5 | tap (0..31); only with stream closed */
+#define FPGA_GET_DELAY 23   /* arg: line0..15; requested IDELAY tap */
+#define FPGA_MARKER_ERRORS 24 /* arg: line0..15; end-marker bit error count */
+#define FPGA_SET_LATE_DATA 25 /* research:16-bit mask selecting later data samples; stream closed */
+#define FPGA_GET_LATE_DATA 26 /* arg0: read mask; normal receiver uses mask0 */
 
 /*
  * The FPGA carries one stream at a time. FPGA_ARM opens it and is answered
@@ -155,12 +161,12 @@
  */
 
 /* The link is sampled at 240 MHz; its phase moves in steps of 1/56 of the
- * 1200 MHz MMCM VCO period (14.9 ps). The image starts at its built-in phase. */
-#define FPGA_PHASE_STEPS 280
+ * 960 MHz MMCM VCO period (18.6 ps). The image starts at its built-in phase. */
+#define FPGA_PHASE_STEPS 224
 
 /*
- * The ESP32-S3 runs from the FPGA's 40 MHz reference. Only change it while
- * the ESP is held in reset (EN low). The pad is high impedance until enabled.
+ * Historical v3 reference-output key. V5 leaves the old output high impedance
+ * and receives a continuous 20 MHz clock from ESP GPIO41 on Br B12/F4.
  */
 #define FPGA_REFERENCE_KEY 40000
 
@@ -200,14 +206,19 @@
 #define FPGA_STAT_LOST_PAIRS_LO 27 /* IQ pairs in those gaps */
 #define FPGA_STAT_LOST_PAIRS_HI 28
 #define FPGA_STAT_DISCARDED_UNITS 29 /* units received with a misread header, dropped */
-#define FPGA_STAT_COUNT 30
+#define FPGA_STAT_CLOCK_HZ 30     /* forwarded clock, measured against board oscillator */
+#define FPGA_STAT_CLOCK_FAULT_DETAIL 31 /* first fault: bit31 lock lost, bit30 frequency invalid, low30 last Hz */
+#define FPGA_STAT_CLOCK_ANOMALIES 32 /* sampled reference pulses outside15..35 ns, at200 MHz resolution */
+#define FPGA_STAT_CLOCK_WIDTHS 33 /* max high, min high, max low, min low; byte fields in5 ns ticks */
+#define FPGA_STAT_COUNT 34
 
 #define FPGA_FLAG_ARMED 0x01
 #define FPGA_FLAG_DDR_READY 0x02
 #define FPGA_FLAG_DESKEW_READY 0x04
 #define FPGA_FLAG_PHASE_READY 0x08    /* sampling phase has reached its target */
-#define FPGA_FLAG_REFERENCE_ON 0x10
+#define FPGA_FLAG_REFERENCE_ON 0x10 /* v4: forwarded input frequency and MMCM lock good */
 #define FPGA_FLAG_STREAM_ENDED 0x20
 #define FPGA_FLAG_STREAM_OPEN 0x40    /* opened by FPGA_ARM, not yet released */
+#define FPGA_FLAG_CLOCK_FAULT 0x80    /* sticky clock loss during an open run; reset by ARM */
 
 #endif

@@ -1,9 +1,9 @@
 // load: bring-up of both devices (volatile: FPGA SRAM and ESP RAM; nothing is
 // written to flash).
 //
-// The ESP32-S3 runs from the FPGA's 40 MHz reference, so the ESP is held in
-// reset while the FPGA is (re)configured and its reference started, then
-// released into its ROM loader, which receives the RAM image.
+// The ESP boots from its crystal and exports the FPGA acquisition reference.
+// Board management and DDR must be ready before loading the ESP; acquisition
+// clock lock is checked only after ESP firmware has enabled GPIO41 MCLK.
 //
 // decode: converts a captured .iqc file into interleaved int16 IQ.
 #include <chrono>
@@ -116,52 +116,34 @@ int command_load(const Options &options)
     for (const std::string &file : {options.esp_image, options.bitstream})
         if (!file.empty() && !readable(file)) throw std::runtime_error("cannot read " + file);
     std::string esptool = tool("ESPTOOL", "esptool.py");
-    std::string before = "usb_reset";
+    const std::string before = "no_reset";
+    ResetLines reset(find_com_port(options));
+    reset.hold_in_reset();
+    std::this_thread::sleep_for(100ms);
 
     if (!options.bitstream.empty()) {
         std::string fpga_port = find_fpga_port(options);
-        ResetLines reset(find_com_port(options));
-        reset.hold_in_reset();
-        std::this_thread::sleep_for(100ms);
 
         run(tool("OPENFPGALOADER", "openFPGALoader") + " -b alchitry_au --ftdi-serial " +
             quote(find_ftdi_serial(options)) + " --write-sram " + quote(options.bitstream));
         uint32_t id = wait_for_answer(fpga_port, CTL_NODE_FPGA, CTL_INFO, 0, 10);
         if (id != CTL_FPGA_FIRMWARE_ID) throw std::runtime_error("unexpected FPGA image after loading");
 
-        // A freshly configured FPGA starts with the reference off; if it is
-        // on, the previous image is still running and the load did not happen.
         ControlPort fpga(fpga_port, CTL_NODE_FPGA);
-        if (fpga.command(CTL_STATUS, FPGA_STAT_FLAGS) & FPGA_FLAG_REFERENCE_ON)
-            throw std::runtime_error("the FPGA was not reconfigured; check the openFPGALoader output");
-        fpga.command(FPGA_REFERENCE, FPGA_REFERENCE_KEY);
-        uint32_t required = FPGA_FLAG_REFERENCE_ON | FPGA_FLAG_PHASE_READY | FPGA_FLAG_DESKEW_READY |
-                            FPGA_FLAG_DDR_READY;
         auto deadline = std::chrono::steady_clock::now() + 10s;
-        uint32_t flags = 0;
-        while (((flags = fpga.command(CTL_STATUS, FPGA_STAT_FLAGS)) & required) != required) {
+        while (!(fpga.command(CTL_STATUS, FPGA_STAT_FLAGS) & FPGA_FLAG_DDR_READY)) {
             if (std::chrono::steady_clock::now() > deadline)
-                throw std::runtime_error("FPGA did not become ready (flags " + std::to_string(flags) + ")");
+                throw std::runtime_error("FPGA DDR did not become ready");
             std::this_thread::sleep_for(100ms);
         }
-        if (options.phase >= 0) {
-            fpga.command(FPGA_PHASE, unsigned(options.phase));
-            while ((fpga.command(CTL_STATUS, FPGA_STAT_FLAGS) & FPGA_FLAG_PHASE_READY) == 0 ||
-                   fpga.command(CTL_STATUS, FPGA_STAT_PHASE) != unsigned(options.phase)) {
-                if (std::chrono::steady_clock::now() > deadline)
-                    throw std::runtime_error("the sampling phase did not settle");
-                std::this_thread::sleep_for(10ms);
-            }
-        }
-        std::fprintf(stderr, "FPGA ready, 40 MHz reference running, sampling phase %u\n",
-                     fpga.command(CTL_STATUS, FPGA_STAT_PHASE));
-
-        reset.boot_to_rom();
-        before = "no_reset";
+        std::fprintf(stderr, "FPGA management and DDR ready; waiting for ESP clock output\n");
     }
+    reset.boot_to_rom();
+    // RAM firmware and ROM can use the same native USB identity. Give the
+    // old device time to disconnect before accepting its lingering symlink.
+    std::this_thread::sleep_for(500ms);
 
-    // Without the reference clock (after a power cycle) the ESP has no USB
-    // port until it is booted above, so look it up only now.
+    // ROM entry changes the native USB identity, so discover its port now.
     std::string esp_port;
     auto deadline = std::chrono::steady_clock::now() + 10s;
     for (;;) {
@@ -173,7 +155,6 @@ int command_load(const Options &options)
         }
         std::this_thread::sleep_for(100ms);
     }
-    if (!options.bitstream.empty()) std::this_thread::sleep_for(500ms);
 
     run(esptool + " --chip esp32s3 --port " + quote(esp_port) + " --before " + before +
         " --after no_reset --no-stub load_ram " + quote(options.esp_image));
@@ -187,7 +168,22 @@ int command_load(const Options &options)
     uint32_t radio = esp.command(CTL_STATUS, ESP_STAT_RADIO);
     if (radio != ESP_RADIO_OK)
         throw std::runtime_error("ESP radio initialisation failed (code " + std::to_string(radio) + ")");
-    std::fprintf(stderr, "ESP32-S3 firmware running, radio ready\n");
+    ControlPort fpga(find_fpga_port(options), CTL_NODE_FPGA);
+    if (fpga.command(CTL_INFO, 0) != CTL_FPGA_FIRMWARE_ID)
+        throw std::runtime_error("load the matching FPGA image for ESP clock input");
+    if (options.phase >= 0) fpga.command(FPGA_PHASE, unsigned(options.phase));
+    const uint32_t required = FPGA_FLAG_REFERENCE_ON | FPGA_FLAG_PHASE_READY |
+                              FPGA_FLAG_DESKEW_READY | FPGA_FLAG_DDR_READY;
+    deadline = std::chrono::steady_clock::now() + 10s;
+    while ((fpga.command(CTL_STATUS, FPGA_STAT_FLAGS) & required) != required ||
+           (options.phase >= 0 && fpga.command(CTL_STATUS, FPGA_STAT_PHASE) != unsigned(options.phase))) {
+        if (std::chrono::steady_clock::now() > deadline)
+            throw std::runtime_error("ESP forwarded clock/FPGA acquisition not ready; measured " +
+                                     std::to_string(fpga.command(CTL_STATUS, FPGA_STAT_CLOCK_HZ)) + " Hz");
+        std::this_thread::sleep_for(100ms);
+    }
+    std::fprintf(stderr, "ESP radio ready; forwarded clock %u Hz, sampling phase %u\n",
+                 fpga.command(CTL_STATUS, FPGA_STAT_CLOCK_HZ), fpga.command(CTL_STATUS, FPGA_STAT_PHASE));
     return 0;
 }
 

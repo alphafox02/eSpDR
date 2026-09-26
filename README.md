@@ -101,16 +101,20 @@ cadence shared by the ESP and FPGA.
 ### Memory placement and link timing
 
 That throughput uses all 16 fast GPIO lanes available through the CPU's
-`wur.gpio_out` register interface for data. A strobe could go on an ordinary
-memory-mapped GPIO, but would do little to help with byte sampling; that path
-cannot supply a clock at the required rate. At roughly 100 MHz, independent
-ESP and FPGA clocks would let the
-sampling point drift across pin transitions. To keep them aligned, the FPGA
-feeds the ESP its 40 MHz reference. Its 240 MHz sampler then follows the
-firmware's exact instruction timings, starting from a unit marker, and samples
-between pin transitions. Each byte is normally held for two CPU cycles, with
-fixed gaps for packing and unit boundaries. Calibrating the sampling phase
-accounts for the delays in the wiring.
+`wur.gpio_out` register interface for data. Independent ESP and FPGA clocks
+would let the sampling point drift across pin transitions. The ESP therefore
+forwards a continuous **20 MHz I2S master clock on GPIO41** to the FPGA, while
+its own RF and CPU clocks remain referenced to its native 40 MHz crystal.
+I2S generates the clock in hardware on a spare GPIO; neither CPU writes an
+extra register for each edge.
+
+The FPGA derives its 240 MHz sampler and 120 MHz acquisition pipeline from
+that input. It follows the firmware's exact instruction timings, starting
+from a unit marker, and samples between pin transitions. Each byte is normally
+held for two CPU cycles, with fixed gaps for packing and unit boundaries.
+Calibrating the sampling phase accounts for the delays in the wiring.
+Management, DDR and FT600 retain independent clocks, with asynchronous FIFOs
+at the boundaries. See [Clock and bus synchronization](docs/CLOCK-SYNC.md).
 
 Instruction and data fetch stalls break that fixed schedule and throw the bus
 out of synchronisation. Testing established that SRAM bank separation is
@@ -174,25 +178,26 @@ core 1. Use short, direct wires and a common ground (Br SV4.2 / SV4.20).
 ![ESP32-S3 to Alchitry Br top-view wiring](docs/images/esp32s3-br-top-view.png)
 
 [Open the zoomable wiring diagram](docs/images/esp32s3-br-top-view.svg).
-The drawing shows the data connections. Add the shared 40 MHz clock connection
-described below. The link timing measurements below were made after the drawing.
+It shows all sixteen data connections and the clock/ground pair.
 
-**Shared clock.** All 16 fast CPU-register GPIO lanes carry data, so the FPGA
-uses the firmware's instruction timings to work out when to sample each byte.
-Feeding its 40 MHz
-reference to the ESP keeps those sampling times aligned with the output.
-FPGA ball **D1** (Br B2) drives the ESP32-S3's **XTAL_P** input.
-On the WROOM-1 module, remove the
-crystal's series part R4 and wire D1 to its XTAL_P-side pad. The crystal stays
-installed. The FPGA keeps D1 high-impedance until `iqstream load` enables it
-while the ESP is held in reset.
+**Forwarded clock.** Keep the ESP's native crystal connected. Connect
+**ESP GPIO41 → Br B12 → FPGA F4** (clock-capable SRCC input, **SV2 pin 28**).
+Route an ESP ground wire alongside it to **Br SV2 pin 19 (GND)**; pin 20 is
++3.3 V. The clock passes through connector B, separately from the C/D data
+wiring. The firmware generates 20 MHz using I2S0 MCLK, PLL240 divided by 12,
+with 10 mA drive. All sixteen data pads also use 10 mA.
 
-Wiring delays determine where between pin transitions it is safe to sample.
-The FPGA's per-line input delays (`fpga/rtl/link_input.v`, `TAPS`) and its
-sampling phase (`DEFAULT_PHASE` in `fpga/rtl/iqstream_top.v`) were measured
-for this wiring with the ESP driving its link lines at 10 mA: the passing
-window is about 1.6 ns wide and the default sits in its centre.
-For your wiring, run `iqstream calibrate` (below).
+If upgrading the earlier wiring, remove the **Br B2/D1 → XTAL_P** wire and
+restore the crystal's series connection (R4 on the modified WROOM-1 module).
+The FPGA no longer drives that pad. GPIO8 was an intermediate clock experiment;
+it is unused in this topology and its downward pin must remain omitted because
+the Br pad beneath it is +3.3 V.
+
+The selected FPGA sampling phase is **21**, with the existing per-line input
+delays and rising-edge data sampling. It passed a 30-minute 80 Msps run with
+zero integrity errors on this assembly. Wiring changes require recalibration:
+run `iqstream calibrate` and verify the intended rate. The detailed topology,
+startup sequence and clock-fault handling are in [CLOCK-SYNC.md](docs/CLOCK-SYNC.md).
 
 ## Building
 
@@ -228,10 +233,12 @@ Load both devices into RAM. A power cycle restores the boards.
 iqstream load --fpga fpga/build/iqstream.bit --esp esp32s3/build/iq-source.bin
 ```
 
-This holds the ESP in reset, loads the FPGA, starts the 40 MHz reference,
-boots the ESP into its ROM loader and loads the firmware, which then calibrates
-the radio. Repeat it after any power cycle. To reload only the ESP, drop
-`--fpga`.
+This holds the ESP in reset, loads the FPGA and waits for its management and
+DDR domains. It then boots the ESP from its crystal into the ROM loader and
+loads the RAM firmware. After radio initialization, the ESP starts its 20 MHz
+clock output; the host waits for FPGA clock lock, sampling phase and input-delay
+readiness. Repeat after any power cycle. To reload only the ESP, drop `--fpga`;
+the matching FPGA image must already be loaded.
 
 Capture:
 
@@ -272,6 +279,8 @@ iqstream calibrate                         # measure the link sampling window, u
 full 240 MHz period (a few minutes), reports the window without link errors
 and sets the FPGA to its centre until the FPGA is reloaded. Reuse the measured
 phase with `iqstream load ... --phase P`, or set `DEFAULT_PHASE` and rebuild.
+There are 224 phase positions per 240 MHz period, about 18.6 ps per step;
+the default for the qualified assembly is 21.
 
 Devices are found automatically in `/dev/serial/by-id` and by FT600 serial
 number. With several boards attached, choose with `--esp-port`, `--fpga-port`,
@@ -419,11 +428,16 @@ live in `docs/images/`. Build outputs are also ignored.
 * **`... is not running this iqstream's ESP firmware`** (or FPGA image): the
   host tool, the firmware and the FPGA image are built together from one
   tree; load the images built with this host tool.
-* **`FPGA not ready: !reference`** (or `!ddr` ...): run `iqstream load` again.
-  After a power cycle the reference is off and the ESP is not running.
-* **Gaps (exit status 3), ESP acquisition failures or lane checksum
-  errors**: link timing or wiring. Run `iqstream calibrate`; check ground and
-  the D1 clock connection.
+* **`FPGA not ready: !esp-clock`** (or `!phase`, `!deskew`, `!ddr`): run
+  `iqstream load` with matching images. Check the restored crystal and the
+  GPIO41 → B12 clock/ground pair. The forwarded clock starts only after ESP
+  firmware initializes the radio.
+* **Forwarded-clock fault or pulse anomalies**: the host fails the capture.
+  Check the short clock lead, adjacent ground and 10 mA drive. Management and
+  DDR remain independently clocked; load/re-arm only after the source is stable.
+* **Gaps (exit status 3), ESP acquisition failures or lane checksum errors**:
+  check data wiring and ground, then run `iqstream calibrate`. MMCM lock alone
+  does not establish a clean data-sampling window.
 * **Reorder overflows**: the host stopped reading for longer than the DDR
   buffer covers (a few seconds at typical rates), so samples were dropped at
   the FPGA input. Write `.iqc` rather than `.cs16`, use a faster disk, or check

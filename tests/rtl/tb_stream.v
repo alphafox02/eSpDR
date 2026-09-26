@@ -31,6 +31,7 @@ module tb #(parameter FIXED_LENGTH = 0, UNITS = 16, RING_BITS = 12, USB_WORDS = 
     wire [RING_BITS:0] ring_used, ring_peak;
 
     stream #(.RING_ADDR_BITS(RING_BITS), .USB_TRANSFER_WORDS(USB_WORDS)) dut (
+        .management_clk(clk), .clear_stream(reset),
         .clk(clk), .reset(reset), .flush(flush), .valid(valid), .last(last), .pair0(pair0),
         .pair1(pair1), .unit_valid(unit_valid), .unit_sequence0(sequence0),
         .unit_sequence1(sequence1), .unit_first0(first0), .unit_first1(first1),

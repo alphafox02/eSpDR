@@ -14,6 +14,8 @@ module stream #(
 ) (
     input  wire         clk,            // 120 MHz processing clock
     input  wire         reset,
+    input  wire         management_clk,
+    input  wire         clear_stream,   // explicit new-run clear, not source clock loss
     input  wire         flush,
     input  wire [1:0]   valid,
     input  wire [1:0]   last,
@@ -250,7 +252,7 @@ module stream #(
 
     // ---- DDR ring (MIG UI clock domain) ------------------------------------------------------
     (* ASYNC_REG = "TRUE" *) reg [1:0] clear_sync = 2'b11;
-    always @(posedge ui_clk) clear_sync <= {clear_sync[0], reset};
+    always @(posedge ui_clk) clear_sync <= {clear_sync[0], clear_stream};
     wire ring_reset = ui_reset || clear_sync[1];
 
     wire         ingress_full, ingress_valid, ingress_ready;
@@ -335,8 +337,8 @@ module stream #(
     snapshot #(.WIDTH(2 * RING_ADDR_BITS + 66)) ring_status (
         .source_clk(ui_clk),
         .source_value({ring_occupancy, ring_occupancy_peak, ring_error_count, egress_overflow}),
-        .clk(clk), .value({ring_used, ring_peak, ring_errors, ring_output_overflow}));
+        .clk(management_clk), .value({ring_used, ring_peak, ring_errors, ring_output_overflow}));
     snapshot #(.WIDTH(64)) usb_status (
         .source_clk(work), .source_value({underruns, max_stall}),
-        .clk(clk), .value({usb_underruns, usb_max_stall}));
+        .clk(management_clk), .value({usb_underruns, usb_max_stall}));
 endmodule

@@ -49,6 +49,12 @@ link_test link_faults 40 3 --faults
 step "control port"
 sim control -- $rtl/uart.v $rtl/control_port.v tests/rtl/tb_control.v
 
+step "forwarded clock domains and loss recovery"
+sim clock_domains -- tests/rtl/tb_clock_domains.v $rtl/iqstream_top.v $rtl/clock_monitor.v $rtl/clock_wave_monitor.v \
+    $rtl/stream.v $rtl/reorder.v $rtl/encoder.v $rtl/packer.v $rtl/ddr_ring.v $rtl/async_fifo.v \
+    $rtl/snapshot.v $rtl/link_lane.v $rtl/link_unpack.v $rtl/control_port.v $rtl/uart.v $rtl/usb_tx.v
+sim clock_wave -- $rtl/clock_wave_monitor.v tests/rtl/tb_clock_wave.v
+
 step "status snapshots"
 sim snapshot -- $rtl/snapshot.v tests/rtl/tb_snapshot.v
 sim snapshot_slow_source SOURCE_PS=12000 -- $rtl/snapshot.v tests/rtl/tb_snapshot.v

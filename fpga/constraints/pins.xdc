@@ -31,8 +31,8 @@ set_property PACKAGE_PIN R12 [get_ports {link[14]}]
 set_property PACKAGE_PIN R13 [get_ports {link[15]}]
 set_property IOSTANDARD LVCMOS33 [get_ports {link[*]}]
 
-# 40 MHz reference to the ESP32-S3 crystal input (Br B2)
-set_property -dict {PACKAGE_PIN D1 IOSTANDARD LVCMOS33 DRIVE 8 SLEW SLOW} [get_ports esp_refin]
+# ESP GPIO41 -> Br B12 -> F4 (SRCC positive). Old D1/B2 is unused/high impedance.
+set_property -dict {PACKAGE_PIN F4 IOSTANDARD LVCMOS33} [get_ports esp_clock]
 
 # FT600 (Ft), 245 FIFO mode
 set_property PACKAGE_PIN F5 [get_ports ft_clk]

@@ -30,6 +30,7 @@ module link_lane #(
     input  wire        clk,
     input  wire        reset,
     input  wire        run,
+    input wire [7:0] data_late,
     input  wire        pair_valid,
     input  wire [31:0] samples,         // {later fall, later rise, earlier fall, earlier rise}
 
@@ -47,7 +48,8 @@ module link_lane #(
     output reg  [31:0] units = 0,
     output reg  [31:0] framing_errors = 0,
     output reg  [31:0] checksum_errors = 0,
-    output reg  [31:0] end_marker_errors = 0
+    output reg  [31:0] end_marker_errors = 0,
+    output reg [255:0] marker_bit_errors = 0
 );
     localparam IDLE = 0, HEADER = 1, PREP0 = 2, PREP1 = 3, PREP2 = 4, PAYLOAD = 5,
                TRAILER = 6;
@@ -67,8 +69,8 @@ module link_lane #(
     reg [16:0] select_cycle = 0;        // payload: cycle to sample the current byte
     reg [8:0]  marker_length = 0;
 
-    wire [7:0] early = samples[7:0];        // data: rising-edge samples
-    wire [7:0] late = samples[23:16];
+    wire [7:0] early = (samples[7:0] & ~data_late) | (samples[15:8] & data_late);        // data: rising-edge samples
+    wire [7:0] late = (samples[23:16] & ~data_late) | (samples[31:24] & data_late);
     wire [7:0] early_fall = samples[15:8];  // marker: falling-edge samples
     wire [7:0] late_fall = samples[31:24];
     // The marker ends at the first falling-edge sample after the 0xFF run that
@@ -142,7 +144,8 @@ module link_lane #(
                      : have_following ? dispatch_cost
                      : trailer_gap;
 
-    integer k;
+    integer k, bit_number;
+    wire [7:0] expected_marker_byte = 8'(`LINK_END_MARKER >> ((trailer_at - 4) * 8));
     wire sequence_ok = sequence_word[0] == (LANE % 2) && layout[29:28] == sequence_word[1:0];
 
     always @(posedge clk) begin
@@ -157,6 +160,7 @@ module link_lane #(
             framing_errors <= 0;
             checksum_errors <= 0;
             end_marker_errors <= 0;
+            marker_bit_errors <= 0;
             sequence_word <= 0;
             layout <= 0;
             byte_index <= 0;
@@ -310,6 +314,10 @@ module link_lane #(
                         wire_checksum[trailer_at * 8 +: 8] <= sampled;
                     else if (sampled != 8'(`LINK_END_MARKER >> ((trailer_at - 4) * 8)))
                         end_marker_bad <= 1;
+                    if (trailer_at >= 4)
+                        for (bit_number = 0; bit_number < 8; bit_number = bit_number + 1)
+                            if (sampled[bit_number] != expected_marker_byte[bit_number])
+                                marker_bit_errors[bit_number*32+:32] <= marker_bit_errors[bit_number*32+:32] + 1'b1;
                     if (trailer_at == 7) begin
                         if (wire_checksum != checksum)
                             checksum_errors <= checksum_errors + 1;

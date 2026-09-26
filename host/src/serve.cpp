@@ -63,7 +63,8 @@ const char *const kFpgaNames[FPGA_STAT_COUNT] = {
     "checksum0", "checksum1", "end_mark0", "end_mark1", "sample_overflow", "reorder_overflow0",
     "reorder_overflow1", "lost_units", "ring_input_overflow", "ring_output_overflow", "ring_errors",
     "ring_used", "ring_peak", "usb_underruns", "usb_max_stall", "reorder_peak0", "reorder_peak1", "phase",
-    "lost_pairs_lo", "lost_pairs_hi", "discarded_units"};
+    "lost_pairs_lo", "lost_pairs_hi", "discarded_units", "clock_hz", "clock_fault_detail",
+    "clock_anomalies", "clock_widths"};
 
 // What the capture thread publishes for the web thread.
 struct Published {

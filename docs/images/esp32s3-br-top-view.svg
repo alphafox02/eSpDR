@@ -1390,7 +1390,7 @@ z
 " clip-path="url(#pdacedbbd05)" style="fill: #ffffff; stroke: #98a4a9; stroke-width: 1.8; stroke-linejoin: miter"/>
    </g>
    <g id="text_75">
-    <text style="font-size: 7.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #61717b" x="696.492537" y="721.589173" transform="rotate(-0 696.492537 721.589173)">41</text>
+    <text style="font-weight: 700; font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #7842a0" x="696.492537" y="721.589173" transform="rotate(-0 696.492537 721.589173)">41</text>
    </g>
    <g id="patch_89">
     <path d="M 656.462687 733.129791
@@ -2642,7 +2642,7 @@ L 1335.666462 227.175508
    <text style="font-weight: 700; font-size: 26px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #182b36" x="51.84" y="39.456" transform="rotate(-0 51.84 39.456)">ESP32-S3 to Br — top-view wiring</text>
   </g>
   <g id="text_154">
-   <text style="font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #61717b" x="53.28" y="70.0344" transform="rotate(-0 53.28 70.0344)">Original Au / Ft / Br stack  •  GPIO14 stays direct  •  10 direct data joints + 6 data jumpers</text>
+   <text style="font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #61717b" x="53.28" y="70.0344" transform="rotate(-0 53.28 70.0344)">Original Au / Ft / Br stack  •  10 direct data joints + 6 data jumpers  •  20 MHz clock + adjacent ground</text>
   </g>
   <g id="text_155">
    <text style="font-weight: 700; font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #182b36" x="1144.8" y="116.3952" transform="rotate(-0 1144.8 116.3952)">ORIENTATION ON THE WHOLE Br</text>
@@ -2720,9 +2720,9 @@ L 1335.666462 227.175508
    <text style="font-weight: 700; font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #182b36" x="1144.8" y="716.1264" transform="rotate(-0 1144.8 716.1264)">POWER AND RESET</text>
   </g>
   <g id="text_180">
-   <text style="font-size: 10.6px; font-family: 'DejaVu Sans'; fill: #182b36" transform="translate(1144.8 752.786344)">USB powers ESP. Connect common GND</text>
-   <text style="font-size: 10.6px; font-family: 'DejaVu Sans'; fill: #182b36" transform="translate(1144.8 767.072328)">to exposed SV4.2 / SV4.20; ground</text>
-   <text style="font-size: 10.6px; font-family: 'DejaVu Sans'; fill: #182b36" transform="translate(1144.8 781.358313)">wire routes are not drawn.</text>
+   <text style="font-size: 10.6px; font-family: 'DejaVu Sans'; fill: #182b36" transform="translate(1144.8 752.786344)">USB powers ESP. Clock return: SV2.19.</text>
+   <text style="font-size: 10.6px; font-family: 'DejaVu Sans'; fill: #182b36" transform="translate(1144.8 767.072328)">Other common grounds: SV4.2 / SV4.20.</text>
+   <text style="font-size: 10.6px; font-family: 'DejaVu Sans'; fill: #182b36" transform="translate(1144.8 781.358313)">Keep ground alongside the clock lead.</text>
   </g>
   <g id="text_181">
    <text style="font-size: 10.3px; font-family: 'DejaVu Sans'; fill: #182b36" transform="translate(1144.8 833.443191)">GPIO3 and GPIO46 are strapping pins.</text>
@@ -2757,10 +2757,10 @@ L 1335.666462 227.175508
    <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #182b36" x="53.28" y="926.2296" transform="rotate(-0 53.28 926.2296)">Retain only the 10 green downward pins. Br stacking connectors sit beneath the ESP: provide clearance and dry-fit before soldering.</text>
   </g>
   <g id="text_191">
-   <text style="font-size: 9.6px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #61717b" x="53.28" y="951.876" transform="rotate(-0 53.28 951.876)">Verified pin identities; schematic component outlines and wire paths, not a fabrication-scale drawing. Full-speed timing remains unqualified.</text>
+   <text style="font-size: 9.6px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #61717b" x="53.28" y="951.876" transform="rotate(-0 53.28 951.876)">Verified pin identities; wire routes are schematic, not to scale. Native crystal restored; GPIO41 clock at 20 MHz; FPGA phase 21.</text>
   </g>
   <g id="text_192">
-   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #61717b" x="1411.2" y="951.876" transform="rotate(-0 1411.2 951.876)">2026-09-21 · wiring proposal</text>
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #61717b" x="1411.2" y="951.876" transform="rotate(-0 1411.2 951.876)">2026-09-26 · forwarded clock</text>
   </g>
  </g>
  <defs>
@@ -2771,4 +2771,23 @@ L 1335.666462 227.175508
    <rect x="1162.667077" y="126.2592" width="230.665846" height="187.416"/>
   </clipPath>
  </defs>
+
+ <g id="forwarded-clock-wiring" font-family="DejaVu Sans">
+  <title>ESP GPIO41 forwards 20 MHz I2S MCLK to Br B12, FPGA F4, SV2 pin 28. Adjacent ground returns to SV2 pin 19.</title>
+  <rect x="608" y="84" width="494" height="51" rx="5" fill="#f5f1f8" stroke="#b9a5ca"/>
+  <text x="620" y="98" font-size="9.6" fill="#61717b">A/B CONNECTION DETAIL · schematic positions</text>
+  <text x="800" y="115" text-anchor="middle" font-size="10.5" font-weight="700" fill="#7842a0">B12 · SV2.28 · F4 (SRCC)</text>
+  <text x="980" y="115" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1a69a1">GND · SV2.19</text>
+  <path d="M 696.492537 737.132776 L 696.492537 810 L 1090 810 L 1090 142 L 800 142 L 800 126" fill="none" stroke="white" stroke-width="5.5" stroke-linejoin="round"/>
+  <path d="M 696.492537 737.132776 L 696.492537 810 L 1090 810 L 1090 142 L 800 142 L 800 126" fill="none" stroke="#7842a0" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M 936.671642 737.132776 L 936.671642 818 L 1098 818 L 1098 134 L 980 134 L 980 126" fill="none" stroke="white" stroke-width="5.5" stroke-linejoin="round"/>
+  <path d="M 936.671642 737.132776 L 936.671642 818 L 1098 818 L 1098 134 L 980 134 L 980 126" fill="none" stroke="#1a69a1" stroke-width="2.4" stroke-linejoin="round"/>
+  <circle cx="696.492537" cy="737.132776" r="5" fill="white" stroke="#7842a0" stroke-width="2.4"/>
+  <circle cx="936.671642" cy="737.132776" r="5" fill="white" stroke="#1a69a1" stroke-width="2.4"/>
+  <circle cx="800" cy="126" r="4" fill="white" stroke="#7842a0" stroke-width="2"/>
+  <circle cx="980" cy="126" r="4" fill="white" stroke="#1a69a1" stroke-width="2"/>
+  <text x="54" y="817" font-size="13" font-weight="700" fill="#7842a0">CLOCK: GPIO41 → B12 / F4 · I2S0 PLL240 / 12 = 20 MHz</text>
+  <text x="54" y="839" font-size="11" fill="#1a69a1">Pair with GND → SV2.19. SV2.20 is +3.3 V. Keep both wires short and together.</text>
+  <text x="54" y="860" font-size="10.5" fill="#182b36">Keep the ESP's 40 MHz crystal connected. Remove the old B2 → XTAL_P wire. GPIO8 is unused.</text>
+ </g>
 </svg>
