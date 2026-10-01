@@ -42,6 +42,34 @@ bursts a second forwarded, and blue-dragon decoded 84 of 89 BLE packets
 with a valid CRC in 15 s. When the band is busy the USB link is the limit
 and the queue drops bursts.
 
+### Channelized bursts (`arg` bit 1)
+
+Bluetooth uses 1 or 2 MHz of the 16 MHz window, so most of a whole-window
+burst is noise. With bit 1 set, the ESP measures each burst's frequency over
+its first 32 us, rounds it to whole MHz, and sends only that channel:
+mixed down, filtered to +-1.6 MHz and decimated to 4 Msps (STREAM_NARROW
+records, a quarter of the data). The filter runs on the S3's vector
+extension at about 8 cycles per pair (`esp32s3/src/narrow_run.S`); in C it
+took 98, far beyond the 15 available at 16 Msps. Bursts may then run to
+3 ms (a whole 3-DH5 packet) instead of 512 us. With bit 0 set as well,
+bursts that keep less than half their power in their channel are dropped
+as Wi-Fi, which catches OFDM the envelope test misses. The host
+interpolates each record back to 16 Msps (see `widen()` in `usb/stream.py`).
+
+A burst is sent on one channel only, so two signals on different channels
+at the same instant are not both kept; whole-window bursts remain the
+default for that.
+
+Measured on a busy band (antenna, `-g 28`, LO 2426 MHz, Wi-Fi nearby), 45 s
+live through blue-dragon: 514 BLE packets with a valid CRC channelized
+against 257 with whole-window bursts. With an `l2ping` flood between two
+Classic devices (LO 2441 MHz, 38 s): 10,993 Classic framings and 12 EDR
+packets with a valid CRC, against 2,973 and none.
+
+`ESP_NARROW_TEST` (op 42, `arg` = offset + 8) runs the filter over a
+snapshot and returns its input and output; `usb/narrow_check.py` compares
+them with the same arithmetic in numpy for every offset.
+
 ## Snapshot (`ESP_SNAPSHOT`, op 40)
 
 Runs the dump engine into capture bank 0 until its 16384-pair ring has been
@@ -58,14 +86,15 @@ to check reception.
 make -C esp32s3
 esptool --chip esp32s3 --port /dev/ttyACM0 --before default-reset \
         --after no-reset --no-stub load-ram esp32s3/build/iq-source.bin
-python3 usb/stream.py --lo-mhz 2426 --gain 28 --seconds 10 --reject-wideband
+python3 usb/stream.py --lo-mhz 2426 --gain 28 --seconds 10 --reject-wideband --channelize
 python3 usb/snap.py --lo-mhz 2426 --rate 16 --gain 28 --count 100
 ```
 
 Both tools write interleaved int16 IQ. eSpDR samples use the LO-minus-RF
 convention and 10-bit values, so they conjugate each pair and scale by 64.
 blue-dragon reads the ESP directly with `-i espdr0` (built with
-`--features espdr`), streaming when the firmware supports it.
+`--features espdr`), streaming channelized bursts when the firmware
+supports it.
 
 `-g`/`--gain` is the receiver's gain-table selector (0-127, not dB). With an
 antenna attached, about 24-30 avoids clipping; the table is not linear.

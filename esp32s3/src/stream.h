@@ -4,14 +4,21 @@
 #include <stdint.h>
 
 /* ESP_STREAM argument bits. */
-#define STREAM_REJECT_WIDEBAND 0x0001u /* drop bursts with a fluctuating envelope (OFDM) */
-#define STREAM_MAX_KPAIRS_SHIFT 8      /* bits 8..15: burst cap, units of 1024 pairs; 0 = default */
+#define STREAM_REJECT_WIDEBAND 0x0001u /* drop Wi-Fi: bursts with a fluctuating envelope (OFDM),
+                                          or channelized, with little power in the channel */
+#define STREAM_CHANNELIZE 0x0002u      /* send each burst cut to its channel at 4 Msps */
+#define STREAM_MAX_KPAIRS_SHIFT 8      /* bits 8..15: burst cap, units of 1024 pairs; 0 = default
+                                          (512 us, or 3 ms channelized) */
 
 /* Record header magic ("BRST") and types. */
 #define STREAM_MAGIC 0x54535242u
 #define STREAM_BURST 1  /* length = pairs; payload = pairs packed 2 per 5 bytes */
 #define STREAM_STATUS 2 /* length = 0; payload = 8 32-bit words, see below */
 #define STREAM_END 3    /* length = 0; no payload */
+#define STREAM_NARROW 4 /* one channel of a burst at 4 Msps (STREAM_CHANNELIZE): length =
+                           outputs, output j centred on pair start + 4j - 2.5; payload
+                           packed as for a burst; flags bits 8..11 = the channel's offset
+                           from the LO in MHz, + 8, LO-minus-RF like the samples */
 #define STREAM_TRUNCATED 0x0001u
 
 /*

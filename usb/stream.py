@@ -6,6 +6,8 @@ drains to the END record. Every record's sequence number and checksum are
 checked. Bursts are written as interleaved int16 IQ for blue-dragon
 (--format ci16): conjugated (eSpDR is LO-minus-RF), scaled by 64, with gaps
 between bursts shortened to --gap pairs of noise at the reported floor.
+With --channelize the ESP sends each burst as its own channel at 4 Msps;
+those are restored to the 16 MHz window here, so the output is the same.
 """
 import argparse
 import struct
@@ -19,8 +21,38 @@ import snap  # noqa: E402  (shares the control protocol)
 
 ESP_STREAM = 41
 MAGIC = 0x54535242
-BURST, STATUS, END = 1, 2, 3
+BURST, STATUS, END, NARROW = 1, 2, 3, 4
 TRUNCATED = 1
+CHANNELIZE = 2
+
+# The ESP's channel filter (Q14, see esp32s3/src/narrow.c). Narrow output j
+# is centred on pair start + 4j - 2.5 and was mixed down by k MHz.
+NARROW_TAPS = np.array([-27, 62, 476, 1428, 2676, 3577, 3577, 2676, 1428, 476, 62, -27]) / 16384
+
+
+def signed(words):
+    i = ((words & 1023) ^ 512).astype(np.int32) - 512
+    q = (((words >> 10) & 1023) ^ 512).astype(np.int32) - 512
+    return i + 1j * q
+
+
+def widen(words, start, k):
+    """Narrow record -> pairs at 16 Msps from `start` on, LO-minus-RF like a burst."""
+    y = signed(words)
+    up = np.zeros(4 * len(y), complex)
+    up[::4] = y
+    # Interpolate with the same filter (gain 4 restores the level). Output i
+    # of the full convolution is centred on pair start - 8 + i.
+    z = np.convolve(up, 4 * NARROW_TAPS)[8 : 8 + len(up)]
+    n = start + np.arange(len(z))
+    return z * np.exp(2j * np.pi * ((k * n) % 16) / 16)
+
+
+def complex_to_ci16(x):
+    out = np.empty(2 * len(x), dtype="<i2")
+    out[0::2] = np.clip(np.round(x.real) * 64, -32768, 32767)
+    out[1::2] = np.clip(-np.round(x.imag) * 64, -32768, 32767)
+    return out
 
 
 def unpack_pairs(payload, pairs):
@@ -65,14 +97,14 @@ class Reader:
         tf, seq, start_lo, start_hi, length = struct.unpack("<IIIII", rest)
         rtype, flags = tf & 0xFFFF, tf >> 16
         start = start_lo | start_hi << 32
-        if rtype == BURST:
+        if rtype in (BURST, NARROW):
             payload = self.read(((length + 1) // 2) * 5)
         elif rtype == STATUS:
             payload = self.read(32)
         else:
             payload = b""
         (check,) = struct.unpack("<I", self.read(4))
-        if rtype == BURST:
+        if rtype in (BURST, NARROW):
             all_words, words = unpack_pairs(payload, length)
             ok = int(all_words.sum(dtype=np.uint64)) & 0xFFFFFFFF == check
         elif rtype == STATUS:
@@ -94,6 +126,7 @@ def main():
     ap.add_argument("--gain", type=int, default=28)
     ap.add_argument("--seconds", type=float, default=10.0)
     ap.add_argument("--reject-wideband", action="store_true")
+    ap.add_argument("--channelize", action="store_true", help="have the ESP send each burst's channel at 4 Msps")
     ap.add_argument("--gap", type=int, default=2048, help="noise pairs written between bursts")
     ap.add_argument("--out", default="/tmp/espdr_stream.ci16")
     ap.add_argument("--verbose", action="store_true", help="print every status record")
@@ -106,12 +139,13 @@ def main():
     lo = esp.cmd32(snap.ESP_SET_LO, int(round(args.lo_mhz * 1e6)))
     print(f"LO {lo / 1e6:.6f} MHz, 16 Msps, gain {args.gain}, reject wideband {args.reject_wideband}")
 
-    esp.cmd(ESP_STREAM, 1 if args.reject_wideband else 0)
+    esp.cmd(ESP_STREAM, (1 if args.reject_wideband else 0) | (CHANNELIZE if args.channelize else 0))
     rd = Reader(esp.s)
     rng = np.random.default_rng(1)
     floor_rms = 4.0
     bursts = burst_pairs = truncated = 0
-    lengths = []
+    lengths, channels = [], {}
+    payload_bytes = 0
     last_status = None
     t0 = time.time()
     stopped = False
@@ -121,7 +155,20 @@ def main():
                 esp.s.write(b"\x00")
                 stopped = True
             rtype, flags, start, length, words = rd.record()
-            if rtype == BURST:
+            if rtype in (BURST, NARROW):
+                payload_bytes += ((length + 1) // 2) * 5
+            if rtype == NARROW:
+                k = ((flags >> 8) & 15) - 8
+                channels[k] = channels.get(k, 0) + 1
+                x = widen(words, start, k)
+                bursts += 1
+                burst_pairs += len(x)
+                lengths.append(len(x))
+                truncated += bool(flags & TRUNCATED)
+                gap = rng.normal(0, floor_rms * 64, 2 * args.gap).astype("<i2")
+                f.write(gap.tobytes())
+                f.write(complex_to_ci16(x).tobytes())
+            elif rtype == BURST:
                 bursts += 1
                 burst_pairs += length
                 lengths.append(length)
@@ -152,7 +199,12 @@ def main():
         L = np.array(lengths)
         print(f"received {bursts} bursts, {burst_pairs / 16e3:.1f} ms of burst airtime "
               f"({100 * burst_pairs / max(elapsed_pairs, 1):.2f}% duty), truncated {truncated}; "
-              f"length us median {np.median(L) / 16:.0f} max {L.max() / 16:.0f}")
+              f"length us median {np.median(L) / 16:.0f} max {L.max() / 16:.0f}; "
+              f"{payload_bytes / 1e3:.0f} KB of samples over USB")
+    if channels:
+        # Offsets are LO-minus-RF: the channel is at LO - k MHz.
+        print("channels (MHz: bursts): " + ", ".join(
+            f"{lo / 1e6 - k:.0f}: {n}" for k, n in sorted(channels.items(), key=lambda kv: -kv[0])))
     print(f"-> {args.out}  (blue-dragon --file {args.out} --format ci16 --sample-rate 16000000 "
           f"-c {round(lo / 1e6)} -C 16)")
 

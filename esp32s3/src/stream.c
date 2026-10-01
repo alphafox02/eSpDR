@@ -29,6 +29,13 @@
  * fills bank 3, whose top holds the ROM's working memory, so that memory is
  * saved before streaming and restored afterwards, and no ROM routine runs in
  * between.
+ *
+ * Optionally each burst is cut down to its own channel before it is queued,
+ * a quarter of the data: its frequency is measured over its first 32 us,
+ * rounded to whole MHz, and the burst from its lead-in on is mixed down,
+ * filtered and decimated to 4 Msps with the vector extension (narrow.h).
+ * Bluetooth keeps most of its power in that channel and Wi-Fi does not,
+ * which makes a sharper Wi-Fi test than the envelope.
  */
 #include "stream.h"
 
@@ -38,6 +45,7 @@
 #include "capture.h"
 #include "control.h"
 #include "link.h"
+#include "narrow.h"
 #include "platform.h"
 #include "radio.h"
 #include "soc/usb_serial_jtag_reg.h"
@@ -68,6 +76,13 @@ static const unsigned writer_bank[WRITER_BANKS] = {0, 1, 3};
 #define FLOOR_WEIGHT (1.0f / 32.0f)
 #define ENVELOPE_CV2_MAX 0.36f    /* power coefficient of variation 0.6, squared */
 #define DEFAULT_MAX_PAIRS (8u * 1024u)    /* 512 us; fits the queue with room to spare */
+#define NARROW_MAX_PAIRS (48u * 1024u)    /* 3 ms in, 30 KB out: a whole 3-DH5 packet */
+#define ESTIMATE_BLOCKS 4u                /* 32 us of signal decide a burst's channel */
+#define NARROW_CHUNK_GROUPS 32u            /* groups of 8 pairs filtered per call */
+#define ROTATION_STRIDE 4u                /* frequency from every fourth pair and the next */
+/* A Bluetooth burst keeps most of its power within its channel's filter;
+ * Wi-Fi spread over the window keeps about a fifth. */
+#define IN_CHANNEL_MIN 0.5f
 #define STATUS_INTERVAL_PAIRS 4000000u /* 250 ms at 16 Msps */
 #define STATUS_WORDS 8u
 #define HEADER_BYTES 24u
@@ -285,8 +300,10 @@ void CORE1_CODE stream_core1(void)
     REG(DUMP_CTRL_REG) = control | DUMP_CTRL_RUN;
     memory_barrier();
     uint32_t last_index = REG(DUMP_WRITE_INDEX_REG) & RING_MASK;
-    c1_origin = last_index;
-    uint64_t written = 0;
+    /* Count pairs from a multiple of 8 in the ring, so that every group of
+     * eight pairs starting at a multiple of 8 is aligned for vector loads. */
+    c1_origin = last_index & ~7u;
+    uint64_t written = last_index - c1_origin;
 
     /* Move to the second writer bank at a known point. Each bank is prepared
      * just before the writer enters it, with sentinels where its segment can
@@ -565,6 +582,134 @@ static void record_burst_end(uint32_t flags)
     record_end(flags, rec_pairs);
 }
 
+/* ---- channelized bursts --------------------------------------------------- */
+
+/* A narrow record carries one channel of a burst, cut by narrow_run(): the
+ * pairs are mixed down by the burst's offset k, filtered and kept at 4 Msps.
+ * Output j is centred on pair start + 4j - 2.5. */
+static narrow_state narrow;
+
+/* cos and sin of 2 pi m / 16, for scoring channels. */
+static const int16_t unit_cos[16] = {16384, 15137, 11585, 6270, 0, -6270, -11585, -15137,
+                                     -16384, -15137, -11585, -6270, 0, 6270, 11585, 15137};
+
+/* Sum of x[n+1] * conj(x[n]) over every fourth pair n of the block at pair
+ * n, whose phase is the mean frequency of what is in it. */
+static void block_rotation(uint64_t n, float *re, float *im)
+{
+    int32_t sr = 0, si = 0;
+    for (uint32_t k = 0; k < BLOCK_PAIRS;) {
+        uint32_t avail;
+        const volatile uint32_t *p = run_at(n + k, &avail);
+        if (!avail)
+            break;
+        uint32_t stop = k + avail < BLOCK_PAIRS ? k + avail : BLOCK_PAIRS;
+        for (uint32_t j = 0; k + 1u < stop; k += ROTATION_STRIDE, j += ROTATION_STRIDE) {
+            uint32_t w0 = p[j], w1 = p[j + 1u];
+            int32_t i0 = (int32_t)(w0 << 22) >> 22, q0 = (int32_t)(w0 << 12) >> 22;
+            int32_t i1 = (int32_t)(w1 << 22) >> 22, q1 = (int32_t)(w1 << 12) >> 22;
+            sr += i1 * i0 + q1 * q0;
+            si += q1 * i0 - i1 * q0;
+        }
+        k = stop;
+    }
+    *re += (float)sr;
+    *im += (float)si;
+}
+
+/* The whole-MHz offset in -7..7 nearest the rotation's phase. */
+static int32_t nearest_channel(float re, float im)
+{
+    int32_t best = -7;
+    float best_score = 0.0f;
+    for (int32_t k = -7; k <= 7; k++) {
+        float score = re * (float)unit_cos[k & 15] + im * (float)unit_cos[(k + 12) & 15];
+        if (k == -7 || score > best_score) {
+            best = k;
+            best_score = score;
+        }
+    }
+    return best;
+}
+
+static bool narrow_begin(uint64_t start, int32_t k)
+{
+    if (!record_begin(STREAM_NARROW, start, 0))
+        return false;
+    narrow_reset(&narrow, k);
+    return true;
+}
+
+/* Feeds pairs [from, from + count) through the channel filter into the open
+ * narrow record; both multiples of 8. Results as for record_pairs(). Each
+ * group of eight pairs gives two outputs, one 5-byte group of the record.
+ * If `power` is given, the outputs' |IQ|^2 is added to it. */
+static enum copy_result record_narrow(uint64_t from, uint32_t count, uint32_t *power)
+{
+    if (queue_free() < count / 8u * 5u + 4u)
+        return COPY_FULL;
+    static uint32_t gather[8] __attribute__((aligned(16)));
+    uint32_t out[2 * NARROW_CHUNK_GROUPS];
+    uint32_t head = q_head, sum = rec_sum;
+    for (uint32_t k = 0; k < count;) {
+        uint32_t avail;
+        const volatile uint32_t *p = run_at(from + k, &avail);
+        if (!avail)
+            return COPY_HOLE;
+        uint32_t groups = (avail < count - k ? avail : count - k) / 8u;
+        if (groups > NARROW_CHUNK_GROUPS)
+            groups = NARROW_CHUNK_GROUPS;
+        if (groups == 0) {
+            /* The group straddles the end of a segment: collect it. */
+            for (uint32_t j = 0; j < 8u; j++) {
+                const volatile uint32_t *q = run_at(from + k + j, &avail);
+                if (!avail || *q == SENTINEL)
+                    return COPY_HOLE;
+                gather[j] = *q;
+            }
+            p = gather;
+            groups = 1;
+        } else if (p[0] == SENTINEL || p[groups * 8u - 1u] == SENTINEL) {
+            return COPY_HOLE;
+        }
+        narrow_run(&narrow, p, (uint32_t)(from + k), groups, out);
+        if (power) {
+            uint32_t e = *power;
+            for (uint32_t j = 0; j < 2u * groups; j++) {
+                int32_t i = (int32_t)(out[j] << 22) >> 22, q = (int32_t)(out[j] << 12) >> 22;
+                e += (uint32_t)(i * i + q * q);
+            }
+            *power = e;
+        }
+        uint32_t offset = head & QUEUE_MASK;
+        if (offset + groups * 5u <= QUEUE_BYTES) {
+            uint8_t *d = queue + offset;
+            for (uint32_t g = 0; g < groups; g++, d += 5) {
+                uint32_t a = out[2u * g], b = out[2u * g + 1u];
+                sum += a + b;
+                uint32_t lo = a | b << 20;
+                d[0] = (uint8_t)lo;
+                d[1] = (uint8_t)(lo >> 8);
+                d[2] = (uint8_t)(lo >> 16);
+                d[3] = (uint8_t)(lo >> 24);
+                d[4] = (uint8_t)(b >> 12);
+            }
+        } else {
+            for (uint32_t g = 0; g < groups; g++) {
+                uint32_t a = out[2u * g], b = out[2u * g + 1u];
+                sum += a + b;
+                put_group_wrapped(head + g * 5u, a, b);
+            }
+        }
+        head += groups * 5u;
+        k += groups * 8u;
+    }
+    q_head = head;
+    rec_sum = sum;
+    rec_pairs += count / 4u;
+    return COPY_OK;
+}
+
 /* ---- USB ---------------------------------------------------------------- */
 
 /* ---- core 0: detection --------------------------------------------------- */
@@ -614,9 +759,10 @@ unsigned stream_run(unsigned arg)
     if (radio_stat(ESP_STAT_RATE) != ESP_RATE_16M)
         return CTL_NOT_READY;
     bool reject_wideband = arg & STREAM_REJECT_WIDEBAND;
+    bool channelize = arg & STREAM_CHANNELIZE;
     uint32_t max_pairs = ((arg >> STREAM_MAX_KPAIRS_SHIFT) & 0xFFu) * 1024u;
     if (!max_pairs)
-        max_pairs = DEFAULT_MAX_PAIRS;
+        max_pairs = channelize ? NARROW_MAX_PAIRS : DEFAULT_MAX_PAIRS;
 
     q_head = 0;
     q_commit = 0;
@@ -655,8 +801,13 @@ unsigned stream_run(unsigned arg)
 
     float floor = 0.0f, env_sum = 0.0f, env_sum2 = 0.0f;
     unsigned init_blocks = 0, quiet = 0, classify = 0;
-    enum { IDLE, ACTIVE, IGNORE } state = IDLE;
+    /* PENDING: a channelized burst has begun, but its channel is still being
+     * measured; its record opens once it is known. */
+    enum { IDLE, PENDING, ACTIVE, IGNORE } state = IDLE;
     bool truncated = false;
+    uint64_t burst_start = 0, burst_pairs = 0;
+    float rot_re = 0.0f, rot_im = 0.0f;
+    unsigned estimated = 0;
 
     for (uint32_t iteration = 0;; iteration++) {
         if ((iteration & 63u) == 0 && serial_rx_pending())
@@ -721,10 +872,20 @@ unsigned stream_run(unsigned arg)
                 uint64_t lead = PRE_BLOCKS * BLOCK_PAIRS;
                 if (done - first_valid < lead)
                     lead = done - first_valid;
+                burst_start = done - lead;
+                burst_pairs = lead + BLOCK_PAIRS;
                 enum copy_result r = COPY_FULL;
-                if (record_begin(STREAM_BURST, done - lead, 0))
-                    r = record_pairs(done - lead, (uint32_t)lead + BLOCK_PAIRS);
-                if (r == COPY_OK) {
+                if (channelize) {
+                    rot_re = rot_im = 0.0f;
+                    block_rotation(done, &rot_re, &rot_im);
+                    estimated = 1;
+                    r = COPY_OK;
+                } else if (record_begin(STREAM_BURST, burst_start, 0)) {
+                    r = record_pairs(burst_start, (uint32_t)burst_pairs);
+                }
+                if (r == COPY_OK && channelize) {
+                    state = PENDING;
+                } else if (r == COPY_OK) {
                     state = ACTIVE;
                 } else {
                     if (rec_open)
@@ -745,24 +906,64 @@ unsigned stream_run(unsigned arg)
             }
         } else {
             quiet = p < floor * OFF_RATIO ? quiet + 1 : 0;
-            if (state == ACTIVE && classify < CLASSIFY_BLOCKS) {
+            if ((state == ACTIVE || state == PENDING) && classify < CLASSIFY_BLOCKS) {
                 env_sum += p;
                 env_sum2 += p * p;
                 if (++classify == CLASSIFY_BLOCKS && reject_wideband) {
                     float mean = env_sum / (float)CLASSIFY_BLOCKS;
                     float var = env_sum2 / (float)CLASSIFY_BLOCKS - mean * mean;
                     if (var > ENVELOPE_CV2_MAX * mean * mean) {
-                        record_abort();
+                        if (rec_open)
+                            record_abort();
                         counters.rejected++;
                         state = IGNORE;
                     }
                 }
             }
-            if (state == ACTIVE) {
-                if (rec_pairs + BLOCK_PAIRS > max_pairs) {
+            if (state == PENDING) {
+                /* Once enough of the burst has been seen, or it has ended,
+                 * open its record and filter everything so far. */
+                burst_pairs += BLOCK_PAIRS;
+                if (estimated < ESTIMATE_BLOCKS && quiet == 0) {
+                    block_rotation(done, &rot_re, &rot_im);
+                    estimated++;
+                }
+                if (estimated >= ESTIMATE_BLOCKS || quiet >= HOLD_BLOCKS) {
+                    /* The lead-in, then the blocks that were measured, whose
+                     * power in the channel is compared with their power in
+                     * the window. */
+                    uint64_t measured = burst_pairs - (uint64_t)classify * BLOCK_PAIRS;
+                    uint32_t in_channel = 0;
+                    enum copy_result r = COPY_FULL;
+                    if (narrow_begin(burst_start, nearest_channel(rot_re, rot_im))) {
+                        r = record_narrow(burst_start, (uint32_t)measured, 0);
+                        if (r == COPY_OK)
+                            r = record_narrow(burst_start + measured, (uint32_t)(burst_pairs - measured), &in_channel);
+                    }
+                    float window = env_sum * (float)BLOCK_PAIRS / 4.0f;
+                    if (r == COPY_OK && reject_wideband && (float)in_channel < IN_CHANNEL_MIN * window) {
+                        record_abort();
+                        counters.rejected++;
+                        state = IGNORE;
+                    } else if (r == COPY_OK) {
+                        state = ACTIVE;
+                    } else {
+                        if (rec_open)
+                            record_abort();
+                        if (r == COPY_HOLE)
+                            counters.abandoned++;
+                        else
+                            counters.dropped++;
+                        state = IGNORE;
+                    }
+                }
+            } else if (state == ACTIVE) {
+                if (burst_pairs + BLOCK_PAIRS > max_pairs) {
                     truncated = true;
                 } else {
-                    enum copy_result r = record_pairs(done, BLOCK_PAIRS);
+                    burst_pairs += BLOCK_PAIRS;
+                    enum copy_result r = channelize ? record_narrow(done, BLOCK_PAIRS, 0)
+                                                    : record_pairs(done, BLOCK_PAIRS);
                     if (r != COPY_OK) {
                         record_abort();
                         if (r == COPY_HOLE)
@@ -775,7 +976,10 @@ unsigned stream_run(unsigned arg)
             }
             if (quiet >= HOLD_BLOCKS) {
                 if (state == ACTIVE) {
-                    record_burst_end(truncated ? STREAM_TRUNCATED : 0);
+                    uint32_t flags = truncated ? STREAM_TRUNCATED : 0;
+                    if (channelize)
+                        flags |= (uint32_t)(narrow.k + 8) << 8;
+                    record_burst_end(flags);
                     counters.sent++;
                     if (truncated)
                         counters.truncated++;
