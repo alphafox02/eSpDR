@@ -83,6 +83,15 @@ static const unsigned writer_bank[WRITER_BANKS] = {0, 1, 3};
 /* A Bluetooth burst keeps most of its power within its channel's filter;
  * Wi-Fi spread over the window keeps about a fifth. */
 #define IN_CHANNEL_MIN 0.5f
+/* Wi-Fi only partly inside the window (at its edge, with the baseband
+ * filter narrowed) can pass that test, but its power still fluctuates
+ * like noise in the channel, where Bluetooth's is constant. The power
+ * variance left after allowing for the channel's noise, relative to the
+ * signal power squared, was measured at -0.07..0.05 for BLE (down to 6 dB
+ * SNR) and 0.25..0.9 for such Wi-Fi. The channel's noise is the window's
+ * floor times the filter's noise gain (the sum of its squared taps). */
+#define ENVELOPE_EXCESS_MAX 0.15f
+#define NARROW_NOISE_GAIN 0.1656f
 #define STATUS_INTERVAL_PAIRS 4000000u /* 250 ms at 16 Msps */
 #define STATUS_WORDS 8u
 #define HEADER_BYTES 24u
@@ -640,11 +649,18 @@ static bool narrow_begin(uint64_t start, int32_t k)
     return true;
 }
 
+/* The outputs' |IQ|^2: its sum, the sum of its squares, and how many. */
+struct channel_power {
+    uint32_t sum;
+    float sum2;
+    uint32_t count;
+};
+
 /* Feeds pairs [from, from + count) through the channel filter into the open
  * narrow record; both multiples of 8. Results as for record_pairs(). Each
  * group of eight pairs gives two outputs, one 5-byte group of the record.
- * If `power` is given, the outputs' |IQ|^2 is added to it. */
-static enum copy_result record_narrow(uint64_t from, uint32_t count, uint32_t *power)
+ * If `power` is given, the outputs' power is added to it. */
+static enum copy_result record_narrow(uint64_t from, uint32_t count, struct channel_power *power)
 {
     if (queue_free() < count / 8u * 5u + 4u)
         return COPY_FULL;
@@ -674,12 +690,17 @@ static enum copy_result record_narrow(uint64_t from, uint32_t count, uint32_t *p
         }
         narrow_run(&narrow, p, (uint32_t)(from + k), groups, out);
         if (power) {
-            uint32_t e = *power;
+            uint32_t e = power->sum;
+            float e2 = power->sum2;
             for (uint32_t j = 0; j < 2u * groups; j++) {
                 int32_t i = (int32_t)(out[j] << 22) >> 22, q = (int32_t)(out[j] << 12) >> 22;
-                e += (uint32_t)(i * i + q * q);
+                uint32_t pw = (uint32_t)(i * i + q * q);
+                e += pw;
+                e2 += (float)pw * (float)pw;
             }
-            *power = e;
+            power->sum = e;
+            power->sum2 = e2;
+            power->count += 2u * groups;
         }
         uint32_t offset = head & QUEUE_MASK;
         if (offset + groups * 5u <= QUEUE_BYTES) {
@@ -934,7 +955,7 @@ unsigned stream_run(unsigned arg)
                      * power in the channel is compared with their power in
                      * the window. */
                     uint64_t measured = burst_pairs - (uint64_t)classify * BLOCK_PAIRS;
-                    uint32_t in_channel = 0;
+                    struct channel_power in_channel = {0, 0.0f, 0};
                     int32_t k = nearest_channel(rot_re, rot_im);
                     /* With a channel mask, positions outside it are left to
                      * the other receivers sharing the band. */
@@ -946,10 +967,21 @@ unsigned stream_run(unsigned arg)
                             r = record_narrow(burst_start + measured, (uint32_t)(burst_pairs - measured), &in_channel);
                     }
                     float window = env_sum * (float)BLOCK_PAIRS / 4.0f;
+                    bool fluctuates = false;
+                    if (in_channel.count) {
+                        float n = (float)in_channel.count;
+                        float mean = (float)in_channel.sum / n;
+                        float excess = in_channel.sum2 / n - mean * mean;
+                        float noise = floor * NARROW_NOISE_GAIN;
+                        float signal = mean - noise;
+                        excess -= noise * (2.0f * mean - noise);
+                        fluctuates = signal > 0.0f && excess > ENVELOPE_EXCESS_MAX * signal * signal;
+                    }
+                    bool narrow_enough = (float)in_channel.sum >= IN_CHANNEL_MIN * window;
                     if (!mine) {
                         counters.rejected++;
                         state = IGNORE;
-                    } else if (r == COPY_OK && reject_wideband && (float)in_channel < IN_CHANNEL_MIN * window) {
+                    } else if (r == COPY_OK && reject_wideband && (!narrow_enough || fluctuates)) {
                         record_abort();
                         counters.rejected++;
                         state = IGNORE;

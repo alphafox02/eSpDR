@@ -68,11 +68,17 @@ packets with a valid CRC, against 2,973 and none.
 
 ### What 16 Msps hears
 
-The 16 Msps samples are the 80 Msps capture decimated by five without
-filtering, so a receiver hears about 80 MHz around its LO folded into its
-16 MHz window: a signal 16 or 32 MHz away from a position in the window
-arrives there at much the same strength (measured flat to about 25 MHz
-from the LO, 5 dB down at 39, gone by 55). A burst's channel offset is
+The 16 Msps samples are the 80 Msps capture decimated by five without a
+digital filter, so the analog baseband filter (`ESP_SET_FILTER`, a 6-bit
+capacitor code; larger is narrower) is the only anti-alias filter. At its
+default of 0 (about 69 MHz) a receiver hears about 80 MHz around its LO
+folded into its 16 MHz window: a signal 16 or 32 MHz away from a position in
+the window arrives there at much the same strength (measured flat to about
+25 MHz from the LO, 5 dB down at 39, gone by 55). At code 54 a signal 9 or
+23 MHz outside the window no longer came through, while one 7 MHz inside
+still did, about a dB down, and the noise floor fell. The bandwidth
+calibration for these codes came from the
+[ESP-SDR](https://github.com/ESPARGOS/esp-sdr) project. A burst's channel offset is
 therefore only known modulo 16 MHz. A BLE packet passes its CRC only when
 dewhitened for the channel it was sent on, which settles it for BLE.
 
