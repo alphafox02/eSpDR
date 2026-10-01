@@ -49,6 +49,7 @@
 #define ESP_RUN 17     /* arg: seconds (1..65535), or 0 to run until stopped */
 #define ESP_STOP 18    /* sent while RUN is active: finish the current unit pair */
 #define ESP_ARG_HIGH 19 /* arg: bits 16..31 of the next operation's argument */
+#define ESP_SNAPSHOT 40 /* one-shot ring capture; the reply is followed by the IQ over USB serial */
 
 /*
  * Receiver settings. Each applies at once (between runs; RUN keeps the ESP

@@ -15,6 +15,7 @@
 #include "hal/i2s_ll.h"
 #include "platform.h"
 #include "radio.h"
+#include "snapshot.h"
 #include "soc/gpio_reg.h"
 #include "soc/gpio_sig_map.h"
 #include "soc/io_mux_reg.h"
@@ -36,6 +37,7 @@ static const unsigned link_signal[LINK_LINES] = {
 
 static uint8_t mac[6];
 static bool outputs_enabled;
+static bool snapshot_pending;
 
 /* The on-board WS2812 retains its last colour through a CPU/RAM reload.
  * Send 24 zero bits on GPIO48; a static low alone does not clear it. */
@@ -196,6 +198,14 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
             return CTL_NOT_READY;
         *value = capture_run(arg);
         return *value ? CTL_RUN_FAILED : CTL_OK;
+    case ESP_SNAPSHOT:
+        if (radio_stat(ESP_STAT_RADIO) != ESP_RADIO_OK)
+            return CTL_NOT_READY;
+        if (!snapshot_capture())
+            return CTL_RUN_FAILED;
+        *value = SNAPSHOT_PAIRS;
+        snapshot_pending = true;
+        return CTL_OK;
     case ESP_STOP: /* the run, if any, has already ended */
     case ESP_ARG_HIGH: /* kept by the command loop */
         return CTL_OK;
@@ -259,6 +269,10 @@ void app_main(void)
         uint8_t status = execute(op, (uint32_t)arg_high << 16 | arg, &value);
         arg_high = op == ESP_ARG_HIGH ? arg : 0;
         reply(op, status, sequence, value);
+        if (snapshot_pending) {
+            snapshot_pending = false;
+            snapshot_send();
+        }
         last_command = cpu_cycles();
     }
 }
