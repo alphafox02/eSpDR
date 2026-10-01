@@ -28,7 +28,7 @@ STATUS = {0: "OK", 1: "UNKNOWN_OP", 2: "BAD_ARGUMENT", 3: "BUSY",
 
 class Esp:
     def __init__(self, port):
-        self.s = serial.Serial(port, 115200, timeout=2)
+        self.s = serial.Serial(port, 115200, timeout=2, write_timeout=2)
         self.seq = 0
         time.sleep(0.2)
         self.s.reset_input_buffer()
