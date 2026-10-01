@@ -21,3 +21,9 @@ unsigned snapshot_capture(void);
  * CRC-32 of the words.
  */
 void snapshot_send(void);
+
+/* Channel filter self-test on the last snapshot: returns cycles taken by
+ * narrow_test_run(); narrow_test_send() sends the 4096 input pairs and the
+ * 1024 outputs as 32-bit words. */
+uint32_t narrow_test_run(int32_t k);
+void narrow_test_send(void);

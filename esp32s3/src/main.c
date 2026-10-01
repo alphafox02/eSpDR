@@ -40,6 +40,7 @@ static uint8_t mac[6];
 static bool outputs_enabled;
 static bool snapshot_pending;
 static bool stream_pending;
+static bool narrow_test_pending;
 static uint32_t stream_arg;
 
 /* The on-board WS2812 retains its last colour through a CPU/RAM reload.
@@ -209,6 +210,16 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
         *value = SNAPSHOT_PAIRS;
         snapshot_pending = true;
         return CTL_OK;
+    case ESP_NARROW_TEST:
+        if (arg > 15)
+            return CTL_BAD_ARGUMENT;
+        if (radio_stat(ESP_STAT_RADIO) != ESP_RADIO_OK)
+            return CTL_NOT_READY;
+        if (!snapshot_capture())
+            return CTL_RUN_FAILED;
+        *value = narrow_test_run((int32_t)arg - 8);
+        narrow_test_pending = true;
+        return CTL_OK;
     case ESP_STREAM:
         if (radio_stat(ESP_STAT_RADIO) != ESP_RADIO_OK || radio_stat(ESP_STAT_RATE) != ESP_RATE_16M)
             return CTL_NOT_READY;
@@ -281,6 +292,10 @@ void app_main(void)
         if (snapshot_pending) {
             snapshot_pending = false;
             snapshot_send();
+        }
+        if (narrow_test_pending) {
+            narrow_test_pending = false;
+            narrow_test_send();
         }
         if (stream_pending) {
             stream_pending = false;

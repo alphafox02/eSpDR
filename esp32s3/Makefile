@@ -59,7 +59,7 @@ SDK_CFLAGS := $(COMMON_FLAGS) -Os -std=gnu17 -freorder-blocks -fstrict-volatile-
 	-Wno-unused-parameter $(SDK_INCLUDES)
 ASFLAGS := -g -mlongcalls -mtext-section-literals -I$(PROTOCOL) -Isrc
 
-APP_SOURCES := main.c platform.c radio.c capture.c libc.c snapshot.c stream.c
+APP_SOURCES := main.c platform.c radio.c capture.c libc.c snapshot.c stream.c narrow.c
 SDK_SOURCES := \
 	$(IDF)/esp_hw_support/port/esp32s3/rtc_clk.c \
 	$(IDF)/esp_hw_support/port/esp32s3/rtc_init.c \
@@ -71,7 +71,8 @@ SDK_SOURCES := \
 OBJECTS := \
 	$(addprefix $(BUILD)/,$(APP_SOURCES:.c=.o)) \
 	$(addprefix $(BUILD)/sdk/,$(notdir $(SDK_SOURCES:.c=.o))) \
-	$(BUILD)/startup.o $(BUILD)/vectors.o $(BUILD)/transmit_lane0.o $(BUILD)/transmit_lane1.o
+	$(BUILD)/startup.o $(BUILD)/vectors.o $(BUILD)/transmit_lane0.o $(BUILD)/transmit_lane1.o \
+	$(BUILD)/narrow_run.o
 
 ROM_LD := $(IDF)/esp_rom/esp32s3/ld
 LINKER_SCRIPTS := -T memory.ld -T $(ROM_LD)/esp32s3.rom.ld -T $(BUILD)/rom-libc.ld \
@@ -92,6 +93,9 @@ $(BUILD)/startup.o: src/startup.S | $(BUILD)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD)/vectors.o: src/vectors.S | $(BUILD)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD)/narrow_run.o: src/narrow_run.S | $(BUILD)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD)/transmit_lane%.o: src/transmit.S $(PROTOCOL)/link.h | $(BUILD)

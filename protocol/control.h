@@ -51,6 +51,7 @@
 #define ESP_ARG_HIGH 19 /* arg: bits 16..31 of the next operation's argument */
 #define ESP_SNAPSHOT 40 /* one-shot ring capture; the reply is followed by the IQ over USB serial */
 #define ESP_STREAM 41   /* burst-gated streaming over USB serial until the host sends a byte */
+#define ESP_NARROW_TEST 42 /* channel filter self-test on a snapshot; arg = k + 8 */
 
 /*
  * Receiver settings. Each applies at once (between runs; RUN keeps the ESP

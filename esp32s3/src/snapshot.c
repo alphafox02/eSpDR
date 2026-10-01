@@ -15,6 +15,7 @@
 #include "link.h"
 #include "platform.h"
 #include "radio.h"
+#include "narrow.h"
 
 #define SNAP_MAGIC 0x50414E53u /* "SNAP", little-endian */
 #define RING_MASK (LINK_RING_PAIRS - 1u)
@@ -96,4 +97,28 @@ void snapshot_send(void)
     }
     crc = ~crc;
     serial_write(&crc, sizeof(crc));
+}
+
+/* Channel filter self-test: runs narrow_step() over the oldest pairs of the
+ * last snapshot, copied to bank 1, and sends them and the outputs. */
+#define TEST_PAIRS 4096u
+static narrow_state test_state;
+
+uint32_t narrow_test_run(int32_t k)
+{
+    uint32_t *in = (uint32_t *)(CAPTURE_BANK_BASE + CAPTURE_BANK_BYTES);
+    uint32_t *out = in + TEST_PAIRS;
+    const uint32_t *ring = (const uint32_t *)CAPTURE_BANK_BASE;
+    unsigned index = (stop_index + SNAPSHOT_SEAM_GUARD) & RING_MASK;
+    for (unsigned i = 0; i < TEST_PAIRS; i++)
+        in[i] = ring[(index + i) & RING_MASK];
+    narrow_reset(&test_state, k);
+    uint32_t start = cpu_cycles();
+    narrow_run(&test_state, in, 0, TEST_PAIRS / 8u, out);
+    return cpu_cycles() - start;
+}
+
+void narrow_test_send(void)
+{
+    serial_write((const void *)(CAPTURE_BANK_BASE + CAPTURE_BANK_BYTES), TEST_PAIRS * 4u + TEST_PAIRS);
 }
