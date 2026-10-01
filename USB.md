@@ -66,6 +66,26 @@ against 257 with whole-window bursts. With an `l2ping` flood between two
 Classic devices (LO 2441 MHz, 38 s): 10,993 Classic framings and 12 EDR
 packets with a valid CRC, against 2,973 and none.
 
+### What 16 Msps hears
+
+The 16 Msps samples are the 80 Msps capture decimated by five without
+filtering, so a receiver hears about 80 MHz around its LO folded into its
+16 MHz window: a signal 16 or 32 MHz away from a position in the window
+arrives there at much the same strength (measured flat to about 25 MHz
+from the LO, 5 dB down at 39, gone by 55). A burst's channel offset is
+therefore only known modulo 16 MHz. A BLE packet passes its CRC only when
+dewhitened for the channel it was sent on, which settles it for BLE.
+
+Several receivers can share one LO and split the channel positions
+between them: `ESP_STREAM`'s high half (sent first with `ESP_ARG_HIGH`)
+is a mask of offsets k (-8..7, bit k + 8), and a channelized burst whose
+offset is outside it is skipped. Tuned to 2441 MHz, the three BLE
+advertising channels fold to k = +7, -1 and -7 (2402, 2426, 2480 MHz). With
+five boards sharing 2441 MHz and blue-dragon placing each burst at every
+frequency it could have come from, about 800 advertising packets with a
+valid CRC were received in 30 s across all three channels.
+`usb/stream.py --positions` sets the mask.
+
 `ESP_NARROW_TEST` (op 42, `arg` = offset + 8) runs the filter over a
 snapshot and returns its input and output; `usb/narrow_check.py` compares
 them with the same arithmetic in numpy for every offset.

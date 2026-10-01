@@ -127,6 +127,8 @@ def main():
     ap.add_argument("--seconds", type=float, default=10.0)
     ap.add_argument("--reject-wideband", action="store_true")
     ap.add_argument("--channelize", action="store_true", help="have the ESP send each burst's channel at 4 Msps")
+    ap.add_argument("--positions", default="", help="with --channelize, only these channel offsets from the LO "
+                    "(MHz, LO-minus-RF, comma separated, -8..7), for sharing one LO between receivers")
     ap.add_argument("--gap", type=int, default=2048, help="noise pairs written between bursts")
     ap.add_argument("--out", default="/tmp/espdr_stream.ci16")
     ap.add_argument("--verbose", action="store_true", help="print every status record")
@@ -139,6 +141,11 @@ def main():
     lo = esp.cmd32(snap.ESP_SET_LO, int(round(args.lo_mhz * 1e6)))
     print(f"LO {lo / 1e6:.6f} MHz, 16 Msps, gain {args.gain}, reject wideband {args.reject_wideband}")
 
+    mask = 0
+    for k in filter(None, args.positions.split(",")):
+        mask |= 1 << (int(k) + 8)
+    if mask:
+        esp.cmd(snap.ESP_ARG_HIGH, mask)
     esp.cmd(ESP_STREAM, (1 if args.reject_wideband else 0) | (CHANNELIZE if args.channelize else 0))
     rd = Reader(esp.s)
     rng = np.random.default_rng(1)

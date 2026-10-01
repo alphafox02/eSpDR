@@ -760,6 +760,7 @@ unsigned stream_run(unsigned arg)
         return CTL_NOT_READY;
     bool reject_wideband = arg & STREAM_REJECT_WIDEBAND;
     bool channelize = arg & STREAM_CHANNELIZE;
+    uint32_t channel_mask = arg >> STREAM_CHANNEL_MASK_SHIFT;
     uint32_t max_pairs = ((arg >> STREAM_MAX_KPAIRS_SHIFT) & 0xFFu) * 1024u;
     if (!max_pairs)
         max_pairs = channelize ? NARROW_MAX_PAIRS : DEFAULT_MAX_PAIRS;
@@ -934,14 +935,21 @@ unsigned stream_run(unsigned arg)
                      * the window. */
                     uint64_t measured = burst_pairs - (uint64_t)classify * BLOCK_PAIRS;
                     uint32_t in_channel = 0;
+                    int32_t k = nearest_channel(rot_re, rot_im);
+                    /* With a channel mask, positions outside it are left to
+                     * the other receivers sharing the band. */
+                    bool mine = !channel_mask || (channel_mask >> (k + 8) & 1u);
                     enum copy_result r = COPY_FULL;
-                    if (narrow_begin(burst_start, nearest_channel(rot_re, rot_im))) {
+                    if (mine && narrow_begin(burst_start, k)) {
                         r = record_narrow(burst_start, (uint32_t)measured, 0);
                         if (r == COPY_OK)
                             r = record_narrow(burst_start + measured, (uint32_t)(burst_pairs - measured), &in_channel);
                     }
                     float window = env_sum * (float)BLOCK_PAIRS / 4.0f;
-                    if (r == COPY_OK && reject_wideband && (float)in_channel < IN_CHANNEL_MIN * window) {
+                    if (!mine) {
+                        counters.rejected++;
+                        state = IGNORE;
+                    } else if (r == COPY_OK && reject_wideband && (float)in_channel < IN_CHANNEL_MIN * window) {
                         record_abort();
                         counters.rejected++;
                         state = IGNORE;

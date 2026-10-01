@@ -9,6 +9,10 @@
 #define STREAM_CHANNELIZE 0x0002u      /* send each burst cut to its channel at 4 Msps */
 #define STREAM_MAX_KPAIRS_SHIFT 8      /* bits 8..15: burst cap, units of 1024 pairs; 0 = default
                                           (512 us, or 3 ms channelized) */
+#define STREAM_CHANNEL_MASK_SHIFT 16   /* bits 16..31 (sent with ESP_ARG_HIGH), channelized only:
+                                          send only bursts whose channel offset k (-8..7 MHz) has
+                                          bit k + 8 set, so receivers on one LO can share the
+                                          positions; 0 = all */
 
 /* Record header magic ("BRST") and types. */
 #define STREAM_MAGIC 0x54535242u
@@ -33,7 +37,7 @@
  * payloads pack each pair's 10-bit I and Q into 20 bits, two pairs per 5
  * bytes, little-endian, as the dump engine produced them (LO-minus-RF
  * orientation). Status words: noise floor (float, mean |IQ|^2 per pair),
- * bursts sent, rejected as wideband, dropped for queue space, truncated,
+ * bursts sent, rejected (as wideband, or for a channel outside the mask), dropped for queue space, truncated,
  * blocks skipped because processing fell behind, stream discontinuities
  * (capture segments lost or not contiguous, plus bursts abandoned at them),
  * queue bytes in use.
