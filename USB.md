@@ -112,11 +112,23 @@ to check reception.
 
 ## Use
 
+Without building anything: download `iq-source.bin` from this
+repository's releases and load it into every attached ESP32-S3 (RAM only;
+a power cycle restores the board):
+
+```sh
+pip install esptool pyserial numpy
+python3 usb/load.py --image iq-source.bin
+```
+
+Or build it and load the result:
+
 ```sh
 . $IDF_PATH/export.sh          # ESP-IDF v5.5.3 or later
 make -C esp32s3
+python3 usb/load.py            # every attached ESP32-S3; --port for one
 esptool --chip esp32s3 --port /dev/ttyACM0 --before default-reset \
-        --after no-reset --no-stub load-ram esp32s3/build/iq-source.bin
+        --after no-reset --no-stub load-ram esp32s3/build/iq-source.bin  # the same, by hand
 python3 usb/stream.py --lo-mhz 2426 --gain 28 --seconds 10 --reject-wideband --channelize
 python3 usb/snap.py --lo-mhz 2426 --rate 16 --gain 28 --count 100
 ```
