@@ -10,5 +10,13 @@
  */
 unsigned capture_run(unsigned seconds);
 
+/*
+ * Saves and restores the ROM's working memory at the top of capture bank 3,
+ * for other code that lets the writer fill that bank. No ROM routine may run
+ * in between.
+ */
+void capture_save_rom(void);
+void capture_restore_rom(void);
+
 /* Statistics of the last run, indexed by ESP_STAT_*. */
 uint32_t capture_stat(unsigned index);

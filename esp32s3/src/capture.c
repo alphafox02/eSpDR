@@ -29,6 +29,7 @@
 #include "link.h"
 #include "platform.h"
 #include "radio.h"
+#include "stream.h"
 #include "soc/systimer_reg.h"
 #include "soc/usb_serial_jtag_reg.h"
 
@@ -403,7 +404,13 @@ void CORE1_CODE __attribute__((noreturn)) core1_main(void)
     memory_barrier();
     core1_alive = 1;
     uint32_t seen = core1_request;
+    uint32_t stream_seen = stream_core1_request;
     for (;;) {
+        if (stream_core1_request != stream_seen) {
+            stream_seen = stream_core1_request;
+            stream_core1();
+            continue;
+        }
         if (core1_request == seen)
             continue;
         seen = core1_request;
@@ -424,6 +431,17 @@ static void copy_words(volatile uint32_t *to, const volatile uint32_t *from, uns
 {
     while (words--)
         *to++ = *from++;
+}
+
+void capture_save_rom(void)
+{
+    copy_words(rom_data, (volatile uint32_t *)ROM_DATA_BASE, ROM_DATA_BYTES / 4);
+}
+
+void capture_restore_rom(void)
+{
+    copy_words((volatile uint32_t *)ROM_DATA_BASE, rom_data, ROM_DATA_BYTES / 4);
+    memory_barrier();
 }
 
 unsigned capture_run(unsigned seconds)

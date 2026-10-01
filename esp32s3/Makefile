@@ -59,7 +59,7 @@ SDK_CFLAGS := $(COMMON_FLAGS) -Os -std=gnu17 -freorder-blocks -fstrict-volatile-
 	-Wno-unused-parameter $(SDK_INCLUDES)
 ASFLAGS := -g -mlongcalls -mtext-section-literals -I$(PROTOCOL) -Isrc
 
-APP_SOURCES := main.c platform.c radio.c capture.c libc.c snapshot.c
+APP_SOURCES := main.c platform.c radio.c capture.c libc.c snapshot.c stream.c
 SDK_SOURCES := \
 	$(IDF)/esp_hw_support/port/esp32s3/rtc_clk.c \
 	$(IDF)/esp_hw_support/port/esp32s3/rtc_init.c \
