@@ -129,6 +129,10 @@ static segment sw_closed[CLOSED_SEGMENTS];
  * previous one ended. */
 static volatile uint32_t sw_discontinuities;
 static volatile uint32_t sw_writer_stopped, sw_exit;
+/* Latest USB SOF frame and the sample-pair count observed just after it.
+ * sw_sof_lock is a seqlock: odd while core 1 is publishing. */
+static volatile uint32_t sw_sof_lock, sw_sof_frame;
+static volatile uint32_t sw_sof_pair_lo, sw_sof_pair_hi;
 
 /* The output queue: core 0 produces, core 1 sends. Cursors are running byte
  * counts; q_commit (end of the last complete record) is written only by
@@ -169,27 +173,61 @@ static uint64_t CORE1_CODE c1_written(uint32_t *last_index, uint64_t written)
     return written;
 }
 
-/* Plants sentinels over pairs [from, from + count) of bank b (not selected). */
-static void CORE1_CODE c1_fill(unsigned b, uint64_t from, uint32_t count)
+static void CORE1_CODE c1_publish_sof(uint32_t frame, uint64_t pair)
+{
+    sw_sof_lock++;
+    memory_barrier();
+    sw_sof_pair_lo = (uint32_t)pair;
+    sw_sof_pair_hi = (uint32_t)(pair >> 32);
+    sw_sof_frame = frame;
+    memory_barrier();
+    sw_sof_lock++;
+    memory_barrier();
+}
+
+static void CORE1_CODE c1_check_sof(uint32_t *last_sof, uint32_t *last_index, uint64_t *written)
+{
+    uint32_t frame = REG(USB_SERIAL_JTAG_FRAM_NUM_REG) & USB_SERIAL_JTAG_SOF_FRAME_INDEX;
+    if (frame == *last_sof)
+        return;
+    *written = c1_written(last_index, *written);
+    c1_publish_sof(frame, *written);
+    *last_sof = frame;
+}
+
+/* Plants sentinels over pairs [from, from + count) of bank b (not selected),
+ * watching for USB SOFs meanwhile unless `last_sof` is null. */
+static void CORE1_CODE c1_fill(unsigned b, uint64_t from, uint32_t count,
+                               uint32_t *last_sof, uint32_t *last_index, uint64_t *written)
 {
     uint32_t *p = (uint32_t *)(CAPTURE_BANK_BASE + b * CAPTURE_BANK_BYTES);
     uint32_t pos = (c1_origin + (uint32_t)from) & RING_MASK;
     uint32_t first = LINK_RING_PAIRS - pos;
     if (first > count)
         first = count;
-    for (uint32_t k = 0; k < first; k++)
+    for (uint32_t k = 0; k < first; k++) {
+        if (last_sof && !(k & 63u))
+            c1_check_sof(last_sof, last_index, written);
         p[pos + k] = SENTINEL;
-    for (uint32_t k = 0; k < count - first; k++)
+    }
+    for (uint32_t k = 0; k < count - first; k++) {
+        if (last_sof && !(k & 63u))
+            c1_check_sof(last_sof, last_index, written);
         p[k] = SENTINEL;
+    }
 }
 
 /* Readies bank b (not selected) for a segment that cannot start before
  * `start` or end before `end`: sentinels around both, so the first and last
- * pairs the writer puts there can be found exactly afterwards. */
-static void CORE1_CODE c1_prepare(unsigned b, uint64_t start, uint64_t end)
+ * pairs the writer puts there can be found exactly afterwards. While running,
+ * this happens a whole segment ahead of the writer, so USB SOFs are watched
+ * for meanwhile (they would otherwise be latched late); the preparations at
+ * start-up race the writer and pass a null `last_sof` to skip that. */
+static void CORE1_CODE c1_prepare(unsigned b, uint64_t start, uint64_t end,
+                                  uint32_t *last_sof, uint32_t *last_index, uint64_t *written)
 {
-    c1_fill(b, start - START_LEAD, START_GUARD);
-    c1_fill(b, end, END_GUARD);
+    c1_fill(b, start - START_LEAD, START_GUARD, last_sof, last_index, written);
+    c1_fill(b, end, END_GUARD, last_sof, last_index, written);
     memory_barrier();
     c1_start_base[b] = start;
     c1_prep_base[b] = end;
@@ -300,6 +338,7 @@ void CORE1_CODE stream_core1(void)
     c1_fifo_empty = false;
     sw_closed_count = 0;
     sw_discontinuities = 0;
+    sw_sof_lock = 0;
 
     /* Start the writer in bank 0. Its first segment is discarded: it was not
      * prepared with sentinels, and its start depends on how the writer
@@ -313,6 +352,7 @@ void CORE1_CODE stream_core1(void)
      * eight pairs starting at a multiple of 8 is aligned for vector loads. */
     c1_origin = last_index & ~7u;
     uint64_t written = last_index - c1_origin;
+    uint32_t last_sof = REG(USB_SERIAL_JTAG_FRAM_NUM_REG) & USB_SERIAL_JTAG_SOF_FRAME_INDEX;
 
     /* Move to the second writer bank at a known point. Each bank is prepared
      * just before the writer enters it, with sentinels where its segment can
@@ -320,12 +360,12 @@ void CORE1_CODE stream_core1(void)
      * and end (no earlier than one segment after that). */
     written = c1_written(&last_index, written);
     uint64_t threshold = written;
-    c1_prepare(writer_bank[1], threshold, threshold + SEG_PAIRS);
+    c1_prepare(writer_bank[1], threshold, threshold + SEG_PAIRS, 0, &last_index, &written);
     c1_select(writer_bank[1]);
     unsigned slot = 1;
     c1_spin(SWITCH_SETTLE_CYCLES);
     threshold += SEG_PAIRS; /* leave the second bank here */
-    c1_prepare(writer_bank[2], threshold, threshold + SEG_PAIRS);
+    c1_prepare(writer_bank[2], threshold, threshold + SEG_PAIRS, 0, &last_index, &written);
     /* Pairs before this point may have landed in either bank. */
     written = c1_written(&last_index, written);
     uint64_t first_valid = (written + BLOCK_PAIRS) & ~(uint64_t)(BLOCK_PAIRS - 1u);
@@ -339,6 +379,7 @@ void CORE1_CODE stream_core1(void)
     uint64_t prev_end = 0; /* end of the last published segment; 0 before the first */
     while (!sw_stop) {
         c1_usb();
+        c1_check_sof(&last_sof, &last_index, &written);
         written = c1_written(&last_index, written);
         if (written < threshold)
             continue;
@@ -369,7 +410,8 @@ void CORE1_CODE stream_core1(void)
         /* The bank now being written is left one segment after its start,
          * which is this end; the bank after it starts no earlier than that. */
         threshold = end + SEG_PAIRS;
-        c1_prepare(writer_bank[(slot + 1u) % WRITER_BANKS], threshold, threshold + SEG_PAIRS);
+        c1_prepare(writer_bank[(slot + 1u) % WRITER_BANKS], threshold, threshold + SEG_PAIRS,
+                   &last_sof, &last_index, &written);
     }
 
     REG(DUMP_CTRL_REG) = control;
@@ -755,10 +797,35 @@ static inline float block_power(uint64_t n)
     return (float)sum * ((float)POWER_STRIDE / (float)BLOCK_PAIRS);
 }
 
-static void put_status(uint64_t now, float floor)
+static bool latest_sof(uint32_t *frame, uint64_t *pair)
 {
-    if (rec_open || !record_begin(STREAM_STATUS, now, STATUS_WORDS * 4u))
-        return;
+    uint32_t before, after, lo, hi, f;
+    do {
+        before = sw_sof_lock;
+        memory_barrier();
+        lo = sw_sof_pair_lo;
+        hi = sw_sof_pair_hi;
+        f = sw_sof_frame;
+        memory_barrier();
+        after = sw_sof_lock;
+    } while ((before & 1u) || before != after);
+    *frame = f;
+    *pair = (uint64_t)hi << 32 | lo;
+    return before != 0;
+}
+
+static bool put_status(uint64_t now, float floor)
+{
+    uint32_t frame;
+    uint64_t pair;
+    bool synced = latest_sof(&frame, &pair);
+    /* Once status is due, wait for a frame boundary shared by every device.
+     * 250 ms of sample time between reports is shorter than this 256 ms USB
+     * grid, so all active receivers report each following boundary. */
+    if (synced && (frame & 0xFFu))
+        return false;
+    if (rec_open || !record_begin(STREAM_STATUS, synced ? pair : now, STATUS_WORDS * 4u))
+        return false;
     union {
         float f;
         uint32_t u;
@@ -772,7 +839,8 @@ static void put_status(uint64_t now, float floor)
         for (unsigned b = 0; b < 4; b++)
             put_byte((uint8_t)(words[i] >> (8 * b)));
     }
-    record_end(0, 0);
+    record_end(synced ? STREAM_STATUS_USB_SOF | frame : 0, 0);
+    return true;
 }
 
 unsigned stream_run(unsigned arg)
@@ -878,8 +946,8 @@ unsigned stream_run(unsigned arg)
         if (done + BLOCK_PAIRS > readable) {
             /* Caught up: use the slack for USB and housekeeping. */
             if (done >= next_status) {
-                put_status(done, floor);
-                next_status = done + STATUS_INTERVAL_PAIRS;
+                if (put_status(done, floor))
+                    next_status = done + STATUS_INTERVAL_PAIRS;
             }
             continue;
         }

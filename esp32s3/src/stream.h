@@ -24,6 +24,11 @@
                            packed as for a burst; flags bits 8..11 = the channel's offset
                            from the LO in MHz, + 8, LO-minus-RF like the samples */
 #define STREAM_TRUNCATED 0x0001u
+/* Status-record flags. When set, the record's start is the pair count latched
+ * just after the named USB SOF arrived. All devices below one host see the
+ * same 11-bit frame number, giving several receivers a common time mark. */
+#define STREAM_STATUS_USB_SOF 0x8000u
+#define STREAM_STATUS_USB_FRAME 0x07FFu
 
 /*
  * Runs the dump engine continuously into capture bank 0 and sends each burst
@@ -36,7 +41,9 @@
  * pair that pads an odd count), or of the words for a status record. Burst
  * payloads pack each pair's 10-bit I and Q into 20 bits, two pairs per 5
  * bytes, little-endian, as the dump engine produced them (LO-minus-RF
- * orientation). Status words: noise floor (float, mean |IQ|^2 per pair),
+ * orientation). A status with STREAM_STATUS_USB_SOF has the USB frame in
+ * flags and the pair count latched just after that SOF in start. Status words:
+ * noise floor (float, mean |IQ|^2 per pair),
  * bursts sent, rejected (as wideband, or for a channel outside the mask), dropped for queue space, truncated,
  * blocks skipped because processing fell behind, stream discontinuities
  * (capture segments lost or not contiguous, plus bursts abandoned at them),

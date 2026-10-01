@@ -33,9 +33,14 @@ record.
 
 Every record has a magic, type, sequence number, start (in pairs) and a
 check value; `esp32s3/src/stream.h` documents the format. Status records
-every 250 ms carry the noise floor and counters for bursts sent, rejected,
-dropped for queue space and truncated, processing overruns, and stream
-discontinuities.
+carry the noise floor and counters for bursts sent, rejected, dropped for
+queue space and truncated, processing overruns, and stream discontinuities.
+They are emitted on common 256 ms USB start-of-frame boundaries: flag bit 15
+marks this, bits 0-10 hold the host's USB frame number, and `start` is the
+sample pair latched just after that frame arrived. Receivers below the same
+USB host can therefore measure their sample-count offset and crystal drift
+without hearing a common RF channel. Existing hosts ignore the new flags and
+remain compatible.
 
 Observed with an antenna on advertising channel 38 (`-g 28`): about 40
 bursts a second forwarded, and blue-dragon decoded 84 of 89 BLE packets
