@@ -13,6 +13,8 @@
                                           or channelized, with little power in the channel */
 #define STREAM_CHANNELIZE 0x0002u      /* send each burst cut to its channel at 4 Msps */
 #define STREAM_TELEMETRY 0x0004u       /* send extended receiver telemetry */
+#define STREAM_TRIGGER_RATIO_SHIFT 3   /* bits 3..7: trigger/noise power ratio; 0 = 4 */
+#define STREAM_TRIGGER_RATIO_MASK 0x001Fu
 #define STREAM_MAX_KPAIRS_SHIFT 8      /* bits 8..15: burst cap, units of 1024 pairs; 0 = default
                                           (512 us, or 3 ms channelized) */
 #define STREAM_CHANNEL_MASK_SHIFT 16   /* bits 16..31 (sent with ESP_ARG_HIGH), channelized only:

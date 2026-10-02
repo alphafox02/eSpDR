@@ -26,8 +26,9 @@
  *
  * Core 0 measures power in 128-pair blocks (every eighth pair) and tracks
  * the noise floor while the band is quiet. A record opens when a block rises
- * 6 dB above the floor, a few blocks early so preambles are kept, and closes
- * once the power has stayed within 3 dB of the floor for the hold time.
+ * 6 dB above the floor by default, a few blocks early so preambles are kept,
+ * and closes once the power has stayed within 3 dB of the floor for the hold
+ * time.
  * Optionally, bursts whose envelope fluctuates like OFDM (Wi-Fi) are dropped,
  * keeping constant-envelope ones such as GFSK (Bluetooth). Kept bursts are
  * packed into a queue in bank 2, which core 1 drains to USB. The writer
@@ -76,7 +77,7 @@ static const unsigned writer_bank[WRITER_BANKS] = {0, 1, 3};
 #define PRE_BLOCKS 4u             /* 32 us of lead-in at 16 Msps */
 #define HOLD_BLOCKS 4u            /* 32 us below the off threshold ends a burst */
 #define CLASSIFY_BLOCKS 4u        /* decide on the envelope after 32 us */
-#define ON_RATIO 4.0f             /* +6 dB */
+#define DEFAULT_ON_RATIO 4u       /* +6 dB */
 #define OFF_RATIO 2.0f            /* +3 dB */
 #define FLOOR_WEIGHT (1.0f / 32.0f)
 #define ENVELOPE_CV2_MAX 0.36f    /* power coefficient of variation 0.6, squared */
@@ -889,6 +890,9 @@ unsigned stream_run(unsigned arg)
     bool reject_wideband = arg & STREAM_REJECT_WIDEBAND;
     bool channelize = arg & STREAM_CHANNELIZE;
     telemetry_enabled = arg & STREAM_TELEMETRY;
+    unsigned on_ratio = (arg >> STREAM_TRIGGER_RATIO_SHIFT) & STREAM_TRIGGER_RATIO_MASK;
+    if (!on_ratio)
+        on_ratio = DEFAULT_ON_RATIO;
     uint32_t channel_mask = arg >> STREAM_CHANNEL_MASK_SHIFT;
     uint32_t max_pairs = ((arg >> STREAM_MAX_KPAIRS_SHIFT) & 0xFFu) * 1024u;
     if (!max_pairs)
@@ -1004,7 +1008,7 @@ unsigned stream_run(unsigned arg)
             floor += p / (float)FLOOR_INIT_BLOCKS;
             init_blocks++;
         } else if (state == IDLE) {
-            if (p > floor * ON_RATIO && floor > 0.0f) {
+            if (p > floor * (float)on_ratio && floor > 0.0f) {
                 if (telemetry_enabled) {
                     telemetry.triggers++;
                     if (p > telemetry.trigger_max_power) {

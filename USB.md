@@ -23,8 +23,8 @@ record.
   discontinuity, never stitched over. Core 1 also feeds USB from its polling
   loop, since the endpoint's single 64-byte buffer must be refilled promptly.
 * Core 0 measures power in 8 us blocks, tracks the noise floor, opens a burst
-  6 dB above it (with 32 us of lead-in) and closes it after 32 us within
-  3 dB. Bursts are capped at 512 us (longer ones are truncated and flagged).
+  6 dB above it by default (with 32 us of lead-in) and closes it after 32 us
+  within 3 dB. Bursts are capped at 512 us (longer ones are truncated and flagged).
   Optionally (`arg` bit 0) bursts whose envelope fluctuates like OFDM (Wi-Fi)
   are dropped, keeping constant-envelope ones such as GFSK (Bluetooth).
 * Bursts are packed at 20 bits per pair into a 64 KB queue in bank 2, which
@@ -42,7 +42,9 @@ USB host can therefore measure their sample-count offset and crystal drift
 without hearing a common RF channel. Existing hosts ignore the new flags and
 remain compatible.
 
-Argument bit 2 enables extended status records for receiver tests. Their first
+Argument bits 3-7 optionally set the integer trigger-to-noise power ratio;
+zero keeps the default ratio of 4. Argument bit 2 enables extended status
+records for receiver tests. Their first
 eight words are the normal status values. The remaining words cover the last
 reporting interval: queue high-water, trigger count, maximum trigger power and
 its noise floor (float bits), rejections by mask/envelope/in-channel power (the
