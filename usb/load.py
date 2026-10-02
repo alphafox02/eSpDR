@@ -17,6 +17,8 @@ import subprocess
 import sys
 import time
 
+from serial.tools import list_ports
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import snap  # noqa: E402  (shares the control protocol)
 
@@ -25,9 +27,16 @@ DEFAULT_IMAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "
 
 
 def esp_ports():
-    """USB Serial/JTAG ports of attached ESP32-S3 boards, by stable name."""
+    """USB Serial/JTAG ports of attached ESP32-S3 boards, stable when possible."""
     ports = sorted(glob.glob("/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit*"))
-    return ports or sorted(glob.glob("/dev/ttyACM*"))
+    if ports:
+        return ports
+    # Some systems do not mount /dev/serial/by-id. Do not fall back to every
+    # ttyACM device: resetting an unrelated modem or debug probe is surprising.
+    # Espressif's native USB Serial/JTAG controller is VID:PID 303a:1001.
+    devices = [p for p in list_ports.comports() if (p.vid, p.pid) == (0x303A, 0x1001)]
+    devices.sort(key=lambda p: (p.serial_number or "", p.location or "", p.device))
+    return [p.device for p in devices]
 
 
 def esptool_command():
@@ -53,13 +62,16 @@ def load(port, image):
 
 def answers(port):
     for _ in range(3):
+        esp = None
         try:
             esp = snap.Esp(port)
             ident = esp.cmd(snap.CTL_INFO)
-            esp.s.close()
             return ident == FIRMWARE_ID
         except Exception:
             time.sleep(0.5)
+        finally:
+            if esp is not None:
+                esp.s.close()
     return False
 
 
