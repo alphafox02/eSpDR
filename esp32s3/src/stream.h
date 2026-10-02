@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 CEMAXECUTER LLC
+ * SPDX-License-Identifier: 0BSD
+ */
+
 /* Burst-gated IQ streaming over USB serial, for hosts without the FPGA link. */
 #pragma once
 
@@ -7,6 +12,7 @@
 #define STREAM_REJECT_WIDEBAND 0x0001u /* drop Wi-Fi: bursts with a fluctuating envelope (OFDM),
                                           or channelized, with little power in the channel */
 #define STREAM_CHANNELIZE 0x0002u      /* send each burst cut to its channel at 4 Msps */
+#define STREAM_TELEMETRY 0x0004u       /* send extended receiver telemetry */
 #define STREAM_MAX_KPAIRS_SHIFT 8      /* bits 8..15: burst cap, units of 1024 pairs; 0 = default
                                           (512 us, or 3 ms channelized) */
 #define STREAM_CHANNEL_MASK_SHIFT 16   /* bits 16..31 (sent with ESP_ARG_HIGH), channelized only:
@@ -23,6 +29,7 @@
                            outputs, output j centred on pair start + 4j - 2.5; payload
                            packed as for a burst; flags bits 8..11 = the channel's offset
                            from the LO in MHz, + 8, LO-minus-RF like the samples */
+#define STREAM_STATUS_V2 5 /* length = 16; first 8 words match STREAM_STATUS */
 #define STREAM_TRUNCATED 0x0001u
 /* Status-record flags. When set, the record's start is the pair count latched
  * just after the named USB SOF arrived. All devices below one host see the
@@ -48,6 +55,10 @@
  * blocks skipped because processing fell behind, stream discontinuities
  * (capture segments lost or not contiguous, plus bursts abandoned at them),
  * queue bytes in use.
+ *
+ * STREAM_STATUS_V2 appends interval counters for queue high-water, triggers,
+ * trigger margin, rejection reasons and backlog.
+ * See USB.md for the word layout.
  */
 unsigned stream_run(unsigned arg);
 

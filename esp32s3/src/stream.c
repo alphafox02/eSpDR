@@ -1,4 +1,9 @@
 /*
+ * SPDX-FileCopyrightText: 2026 CEMAXECUTER LLC
+ * SPDX-License-Identifier: 0BSD
+ */
+
+/*
  * Burst-gated IQ streaming over USB serial.
  *
  * USB Full Speed carries about 1 MB/s, while 16 Msps of IQ is 40 MB/s even
@@ -94,6 +99,7 @@ static const unsigned writer_bank[WRITER_BANKS] = {0, 1, 3};
 #define NARROW_NOISE_GAIN 0.1656f
 #define STATUS_INTERVAL_PAIRS 4000000u /* 250 ms at 16 Msps */
 #define STATUS_WORDS 8u
+#define STATUS_V2_WORDS 16u
 #define HEADER_BYTES 24u
 #define USB_PACKET 64u
 
@@ -478,9 +484,19 @@ static uint32_t rec_sum;   /* sum of the 20-bit pairs, or of status words */
 static bool rec_open;
 
 static uint32_t sequence;
-static struct {
+static struct stream_counters {
     uint32_t sent, rejected, dropped, truncated, overruns, abandoned;
 } counters;
+
+/* Diagnostics reset after each extended status record. */
+static bool telemetry_enabled;
+static struct telemetry_interval {
+    uint32_t queue_high_water;
+    uint32_t triggers;
+    float trigger_max_power, trigger_floor;
+    uint32_t rejected_mask, rejected_envelope, rejected_not_narrow;
+    uint32_t max_backlog;
+} telemetry;
 
 static inline uint32_t queue_free(void) { return QUEUE_BYTES - (q_head - q_tail); }
 
@@ -526,6 +542,11 @@ static void record_end(uint32_t flags, uint32_t length)
     put_u32_at(rec_start + 20, length);
     put_u32_at(q_head, rec_sum);
     q_head += 4;
+    if (telemetry_enabled) {
+        uint32_t used = q_head - q_tail;
+        if (used > telemetry.queue_high_water)
+            telemetry.queue_high_water = used;
+    }
     memory_barrier();
     q_commit = q_head;
     rec_open = false;
@@ -824,22 +845,40 @@ static bool put_status(uint64_t now, float floor)
      * grid, so all active receivers report each following boundary. */
     if (synced && (frame & 0xFFu))
         return false;
-    if (rec_open || !record_begin(STREAM_STATUS, synced ? pair : now, STATUS_WORDS * 4u))
+    uint32_t type = telemetry_enabled ? STREAM_STATUS_V2 : STREAM_STATUS;
+    uint32_t count = telemetry_enabled ? STATUS_V2_WORDS : STATUS_WORDS;
+    if (rec_open || !record_begin(type, synced ? pair : now, count * 4u))
         return false;
     union {
         float f;
         uint32_t u;
     } bits = {.f = floor};
-    uint32_t words[STATUS_WORDS] = {
+    uint32_t words[STATUS_V2_WORDS] = {
         bits.u, counters.sent, counters.rejected, counters.dropped,
         counters.truncated, counters.overruns, sw_discontinuities + counters.abandoned, q_head - q_tail,
+        telemetry.queue_high_water,
+        telemetry.triggers,
+        0, 0,
+        telemetry.rejected_mask, telemetry.rejected_envelope,
+        telemetry.rejected_not_narrow,
+        telemetry.max_backlog,
     };
-    for (unsigned i = 0; i < STATUS_WORDS; i++) {
+    union {
+        float f;
+        uint32_t u;
+    } trigger_bits = {.f = telemetry.trigger_max_power};
+    words[10] = trigger_bits.u;
+    trigger_bits.f = telemetry.trigger_floor;
+    words[11] = trigger_bits.u;
+    for (unsigned i = 0; i < count; i++) {
         rec_sum += words[i];
         for (unsigned b = 0; b < 4; b++)
             put_byte((uint8_t)(words[i] >> (8 * b)));
     }
-    record_end(synced ? STREAM_STATUS_USB_SOF | frame : 0, 0);
+    record_end(synced ? STREAM_STATUS_USB_SOF | frame : 0,
+               telemetry_enabled ? STATUS_V2_WORDS : 0);
+    if (telemetry_enabled)
+        telemetry = (struct telemetry_interval){0};
     return true;
 }
 
@@ -849,6 +888,7 @@ unsigned stream_run(unsigned arg)
         return CTL_NOT_READY;
     bool reject_wideband = arg & STREAM_REJECT_WIDEBAND;
     bool channelize = arg & STREAM_CHANNELIZE;
+    telemetry_enabled = arg & STREAM_TELEMETRY;
     uint32_t channel_mask = arg >> STREAM_CHANNEL_MASK_SHIFT;
     uint32_t max_pairs = ((arg >> STREAM_MAX_KPAIRS_SHIFT) & 0xFFu) * 1024u;
     if (!max_pairs)
@@ -862,9 +902,8 @@ unsigned stream_run(unsigned arg)
     seen_count = 0;
     hole_head = hole_tail = 0;
     lookup = (segment){0, 0, 0, 0, 0};
-    counters.sent = counters.rejected = counters.dropped = 0;
-    counters.truncated = counters.overruns = 0;
-    counters.abandoned = 0;
+    counters = (struct stream_counters){0};
+    telemetry = (struct telemetry_interval){0};
 
     /* The writer will fill bank 3, which holds the ROM's working memory: keep
      * a copy until it has stopped. No ROM routine runs while streaming. */
@@ -918,6 +957,13 @@ unsigned stream_run(unsigned arg)
                 hole_head++;
             }
             readable = s->end;
+            if (telemetry_enabled && readable > done) {
+                uint64_t backlog = readable - done;
+                if (backlog > 0xFFFFFFFFu)
+                    backlog = 0xFFFFFFFFu;
+                if ((uint32_t)backlog > telemetry.max_backlog)
+                    telemetry.max_backlog = (uint32_t)backlog;
+            }
         }
 
         /* Step over a hole that the next block would reach: a burst must not
@@ -959,6 +1005,13 @@ unsigned stream_run(unsigned arg)
             init_blocks++;
         } else if (state == IDLE) {
             if (p > floor * ON_RATIO && floor > 0.0f) {
+                if (telemetry_enabled) {
+                    telemetry.triggers++;
+                    if (p > telemetry.trigger_max_power) {
+                        telemetry.trigger_max_power = p;
+                        telemetry.trigger_floor = floor;
+                    }
+                }
                 uint64_t lead = PRE_BLOCKS * BLOCK_PAIRS;
                 if (done - first_valid < lead)
                     lead = done - first_valid;
@@ -1006,6 +1059,8 @@ unsigned stream_run(unsigned arg)
                         if (rec_open)
                             record_abort();
                         counters.rejected++;
+                        if (telemetry_enabled)
+                            telemetry.rejected_envelope++;
                         state = IGNORE;
                     }
                 }
@@ -1048,10 +1103,20 @@ unsigned stream_run(unsigned arg)
                     bool narrow_enough = (float)in_channel.sum >= IN_CHANNEL_MIN * window;
                     if (!mine) {
                         counters.rejected++;
+                        if (telemetry_enabled)
+                            telemetry.rejected_mask++;
                         state = IGNORE;
-                    } else if (r == COPY_OK && reject_wideband && (!narrow_enough || fluctuates)) {
+                    } else if (r == COPY_OK && reject_wideband && !narrow_enough) {
                         record_abort();
                         counters.rejected++;
+                        if (telemetry_enabled)
+                            telemetry.rejected_not_narrow++;
+                        state = IGNORE;
+                    } else if (r == COPY_OK && reject_wideband && fluctuates) {
+                        record_abort();
+                        counters.rejected++;
+                        if (telemetry_enabled)
+                            telemetry.rejected_envelope++;
                         state = IGNORE;
                     } else if (r == COPY_OK) {
                         state = ACTIVE;
