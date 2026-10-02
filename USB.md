@@ -45,8 +45,9 @@ remain compatible.
 Argument bit 2 enables extended status records for receiver tests. Their first
 eight words are the normal status values. The remaining words cover the last
 reporting interval: queue high-water, trigger count, maximum trigger power and
-its noise floor (float bits), rejections by mask/envelope/in-channel power, and
-maximum unread-pair backlog. Normal streams keep the original record format.
+its noise floor (float bits), rejections by mask/envelope/in-channel power (the
+envelope count covers both the whole-window and the in-channel envelope
+tests), and maximum unread-pair backlog. Normal streams keep the original record format.
 
 Observed with an antenna on advertising channel 38 (`-g 28`): about 40
 bursts a second forwarded, and blue-dragon decoded 84 of 89 BLE packets
