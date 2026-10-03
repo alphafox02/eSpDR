@@ -1095,7 +1095,12 @@ unsigned stream_run(unsigned arg)
                     }
                     float window = env_sum * (float)BLOCK_PAIRS / 4.0f;
                     bool fluctuates = false;
-                    if (in_channel.count) {
+                    /* Near the LO the radio's DC offset lies inside the
+                     * channel's filter and beats with a Bluetooth packet, so
+                     * its power fluctuates too. Wi-Fi there covers the whole
+                     * window and fails the in-channel power test anyway; the
+                     * envelope test is for Wi-Fi partly inside at the edges. */
+                    if (in_channel.count && (k < -2 || k > 2)) {
                         float n = (float)in_channel.count;
                         float mean = (float)in_channel.sum / n;
                         float excess = in_channel.sum2 / n - mean * mean;

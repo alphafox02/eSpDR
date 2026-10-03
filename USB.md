@@ -67,7 +67,12 @@ extension at about 8 cycles per pair (`esp32s3/src/narrow_run.S`); in C it
 took 98, far beyond the 15 available at 16 Msps. Bursts may then run to
 3 ms (a whole 3-DH5 packet) instead of 512 us. With bit 0 set as well,
 bursts that keep less than half their power in their channel are dropped
-as Wi-Fi, which catches OFDM the envelope test misses. The host
+as Wi-Fi, which catches OFDM the envelope test misses. Channels within
+2 MHz of the LO skip the in-channel envelope test: the radio's DC offset
+lies inside their filter and beats with a Bluetooth packet, while Wi-Fi
+there covers the whole window and fails the power test anyway. During an
+`l2ping` flood (LO 2408.5 MHz) the two channels beside the LO went from a
+median of 59% to 105% of the packets on the farther channels. The host
 interpolates each record back to 16 Msps (see `widen()` in `usb/stream.py`).
 
 A burst is sent on one channel only, so two signals on different channels
