@@ -98,6 +98,10 @@ static const unsigned writer_bank[WRITER_BANKS] = {0, 1, 3};
  * floor times the filter's noise gain (the sum of its squared taps). */
 #define ENVELOPE_EXCESS_MAX 0.15f
 #define NARROW_NOISE_GAIN 0.1656f
+/* Filter codes at or above this keep a 20 MHz Wi-Fi signal spread across
+ * the 16 MHz window. Wider settings are used for folded reception, where
+ * aliases can instead concentrate its power in one reported channel. */
+#define NEAR_LO_FILTER_MIN 48u
 #define STATUS_INTERVAL_PAIRS 4000000u /* 250 ms at 16 Msps */
 #define STATUS_WORDS 8u
 #define STATUS_V2_WORDS 16u
@@ -889,6 +893,9 @@ unsigned stream_run(unsigned arg)
         return CTL_NOT_READY;
     bool reject_wideband = arg & STREAM_REJECT_WIDEBAND;
     bool channelize = arg & STREAM_CHANNELIZE;
+    uint32_t filter = radio_stat(ESP_STAT_FILTER);
+    bool narrow_filter = (filter & 63u) >= NEAR_LO_FILTER_MIN &&
+                         ((filter >> 8) & 63u) >= NEAR_LO_FILTER_MIN;
     telemetry_enabled = arg & STREAM_TELEMETRY;
     unsigned on_ratio = (arg >> STREAM_TRIGGER_RATIO_SHIFT) & STREAM_TRIGGER_RATIO_MASK;
     if (!on_ratio)
@@ -1095,12 +1102,13 @@ unsigned stream_run(unsigned arg)
                     }
                     float window = env_sum * (float)BLOCK_PAIRS / 4.0f;
                     bool fluctuates = false;
-                    /* Near the LO the radio's DC offset lies inside the
-                     * channel's filter and beats with a Bluetooth packet, so
-                     * its power fluctuates too. Wi-Fi there covers the whole
-                     * window and fails the in-channel power test anyway; the
-                     * envelope test is for Wi-Fi partly inside at the edges. */
-                    if (in_channel.count && (k < -2 || k > 2)) {
+                    /* With a narrow baseband filter, the radio's DC offset
+                     * beats with Bluetooth near the LO while a 20 MHz Wi-Fi
+                     * signal still spans the window and fails the in-channel
+                     * power test. A wide filter is used for folded reception;
+                     * keep the envelope test there because aliases can put
+                     * more of a Wi-Fi signal in one reported channel. */
+                    if (in_channel.count && (!narrow_filter || k < -2 || k > 2)) {
                         float n = (float)in_channel.count;
                         float mean = (float)in_channel.sum / n;
                         float excess = in_channel.sum2 / n - mean * mean;
