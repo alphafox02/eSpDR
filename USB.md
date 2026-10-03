@@ -156,6 +156,11 @@ blue-dragon reads the ESP directly with `-i espdr0` (built with
 `--features espdr`), streaming channelized bursts when the firmware
 supports it.
 
+The firmware reports a revision (`CTL_INFO` argument 3), raised with each
+release hosts may depend on; firmware from before revisions answers that
+request with `CTL_BAD_ARGUMENT`, which counts as revision 0. The loader
+prints each board's revision after loading it.
+
 `-g`/`--gain` is the receiver's gain-table selector (0-127, not dB). With an
 antenna attached, about 24-30 avoids clipping; the table is not linear.
 

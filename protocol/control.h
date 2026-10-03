@@ -38,9 +38,13 @@
 /* Identity values returned by CTL_INFO with argument 0. */
 #define CTL_ESP_FIRMWARE_ID 0x49515305
 #define CTL_FPGA_FIRMWARE_ID 0x49514605
+/* ESP firmware revision, CTL_INFO argument 3; raised with each release whose
+ * behaviour hosts may depend on. Firmware older than revision 1 answers
+ * argument 3 with CTL_BAD_ARGUMENT. */
+#define CTL_ESP_FIRMWARE_REVISION 1
 
 /* Operations understood by both nodes. */
-#define CTL_INFO 1   /* arg 0: firmware id; ESP arg 1/2: MAC bytes 0-3 / 4-5 */
+#define CTL_INFO 1   /* arg 0: firmware id; ESP arg 1/2: MAC bytes 0-3 / 4-5, arg 3: revision */
 #define CTL_SAFE 2   /* abort any activity and release every link output */
 #define CTL_STATUS 3 /* arg: statistic index (ESP_STAT_* / FPGA_STAT_*) */
 

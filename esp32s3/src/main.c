@@ -170,6 +170,7 @@ static uint32_t info(unsigned what)
     case 0: return CTL_ESP_FIRMWARE_ID;
     case 1: return load_le(mac, 4);
     case 2: return load_le(mac + 4, 2);
+    case 3: return CTL_ESP_FIRMWARE_REVISION;
     default: return 0;
     }
 }
@@ -178,7 +179,7 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
 {
     switch (op) {
     case CTL_INFO:
-        if (arg > 2)
+        if (arg > 3)
             return CTL_BAD_ARGUMENT;
         *value = info(arg);
         return CTL_OK;

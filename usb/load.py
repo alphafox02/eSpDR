@@ -61,18 +61,23 @@ def load(port, image):
 
 
 def answers(port):
+    """The firmware's revision if it answers (0 before revisions), else None."""
     for _ in range(3):
         esp = None
         try:
             esp = snap.Esp(port)
-            ident = esp.cmd(snap.CTL_INFO)
-            return ident == FIRMWARE_ID
+            if esp.cmd(snap.CTL_INFO) != FIRMWARE_ID:
+                return None
+            try:
+                return esp.cmd(snap.CTL_INFO, 3)
+            except IOError:
+                return 0
         except Exception:
             time.sleep(0.5)
         finally:
             if esp is not None:
                 esp.s.close()
-    return False
+    return None
 
 
 def main():
@@ -91,10 +96,12 @@ def main():
     for port in ports:
         name = os.path.basename(os.path.realpath(port))
         error = load(port, args.image)
+        revision = None
         if error is None:
             time.sleep(1.0)  # the firmware starts its radio after loading
-            error = None if answers(port) else "loaded, but the firmware does not answer"
-        print(f"{name}: {'ok' if error is None else error}")
+            revision = answers(port)
+            error = None if revision is not None else "loaded, but the firmware does not answer"
+        print(f"{name}: {f'ok (revision {revision})' if error is None else error}")
         failed += error is not None
     return 1 if failed else 0
 
